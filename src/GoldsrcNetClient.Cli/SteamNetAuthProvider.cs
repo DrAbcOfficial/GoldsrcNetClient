@@ -1,24 +1,13 @@
 using GoldsrcNetClient.Core.Network;
-using System.Runtime.InteropServices;
 using Steamworks;
 
 namespace GoldsrcNetClient.Cli;
 
 public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
 {
-    private static class Native
-    {
-        [DllImport("steam_api64", CallingConvention = CallingConvention.Cdecl)]
-        public static extern int SteamAPI_ISteamUser_InitiateGameConnection(
-            byte[] pAuthBlob, int cbMaxAuthBlob,
-            ulong steamIDGameServer, uint unIPServer, ushort usPortServer,
-            [MarshalAs(UnmanagedType.I1)] bool bSecure);
-    }
-
-    private HAuthTicket _hTicket;
     private byte[] _ticketData = [];
 
-    public bool IsAvailable => _ticketData.Length > 0;
+    public bool IsAvailable { get; private set; }
     public string? LastError { get; private set; }
 
     public SteamNetAuthProvider(uint appId = 70)
@@ -32,17 +21,7 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
                 return;
             }
 
-            var ticketBuf = new byte[4096];
-            var netIdentity = new SteamNetworkingIdentity();
-            _hTicket = SteamUser.GetAuthSessionTicket(ticketBuf, ticketBuf.Length, out uint ticketSize, ref netIdentity);
-            if (ticketSize > 0)
-            {
-                _ticketData = ticketBuf[..(int)ticketSize];
-            }
-            else
-            {
-                LastError = "GetAuthSessionTicket returned zero-size ticket.";
-            }
+            IsAvailable = true;
         }
         catch (DllNotFoundException ex)
         {
@@ -80,8 +59,9 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
         try
         {
             var blob = new byte[4096];
-            int resultLen = Native.SteamAPI_ISteamUser_InitiateGameConnection(
-                blob, blob.Length, serverSteamId, serverIp, serverPort, false);
+            var steamId = new CSteamID(serverSteamId);
+            int resultLen = SteamUser.InitiateGameConnection_DEPRECATED(
+                blob, blob.Length, steamId, serverIp, serverPort, false);
 
             if (resultLen > 0)
             {
@@ -89,11 +69,11 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
                 return _ticketData;
             }
 
-            LastError = $"InitiateGameConnection returned {resultLen} (expected > 0). Falling back to session ticket.";
+            LastError = $"InitiateGameConnection returned {resultLen} (expected > 0).";
         }
-        catch (EntryPointNotFoundException)
+        catch (Exception ex)
         {
-            LastError = "InitiateGameConnection not available in this steam_api64.dll (requires Steamworks SDK 1.60+). Falling back to GetAuthSessionTicket.";
+            LastError = $"InitiateGameConnection_DEPRECATED failed: {ex.GetType().Name}: {ex.Message}";
         }
 
         return GetRawAuthBytes();
@@ -101,12 +81,8 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
 
     public void Dispose()
     {
-        if (_hTicket != HAuthTicket.Invalid)
-        {
-            SteamUser.CancelAuthTicket(_hTicket);
-            _hTicket = HAuthTicket.Invalid;
-        }
         _ticketData = [];
+        IsAvailable = false;
         try { SteamAPI.Shutdown(); } catch { }
     }
 }
