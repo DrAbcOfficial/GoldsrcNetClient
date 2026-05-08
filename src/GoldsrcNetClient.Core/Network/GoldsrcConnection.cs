@@ -40,6 +40,40 @@ public class GoldsrcConnection : IDisposable
 
     public Task Connected => _connectedTcs.Task;
 
+    public string UserInfo { get; set; } = "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000\\hltv\\0";
+
+    public void SetUserInfo(string key, string value)
+    {
+        var current = UserInfo;
+        var parts = current.Split('\\');
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 1; i + 1 < parts.Length; i += 2)
+            dict[parts[i]] = parts[i + 1];
+
+        dict[key] = value;
+
+        var sb = new System.Text.StringBuilder();
+        foreach (var kv in dict)
+        {
+            sb.Append('\\');
+            sb.Append(kv.Key);
+            sb.Append('\\');
+            sb.Append(kv.Value);
+        }
+        UserInfo = sb.ToString();
+    }
+
+    public string? GetUserInfo(string key)
+    {
+        var parts = UserInfo.Split('\\');
+        for (int i = 1; i + 1 < parts.Length; i += 2)
+        {
+            if (string.Equals(parts[i], key, StringComparison.OrdinalIgnoreCase))
+                return parts[i + 1];
+        }
+        return null;
+    }
+
     public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null, int localPort = 0)
     {
         _logger = logger ?? NullLogger<GoldsrcConnection>.Instance;
@@ -80,7 +114,7 @@ public class GoldsrcConnection : IDisposable
 
             if (header == MessageConstants.ConnectionlessMarker)
             {
-                var payload = Encoding.ASCII.GetString(data, offset, len - offset);
+                var payload = Encoding.UTF8.GetString(data, offset, len - offset);
                 _logger.LogDebug($"connectionless: {payload[..Math.Min(payload.Length, 200)]}");
                 _sessions[ep] = await ProcessConnectionless(ep, payload, ct);
                 if (_sessions[ep] == SessionState.Connected)
@@ -157,7 +191,7 @@ public class GoldsrcConnection : IDisposable
                 string challengeToken = challengeFromField;
                 _logger.LogDebug($"[Challenge] using field2 as challenge: {challengeToken}");
 
-                ctx.Challenge = Encoding.ASCII.GetBytes(challengeToken);
+                ctx.Challenge = Encoding.UTF8.GetBytes(challengeToken);
 
                 _logger.LogDebug($"[Challenge] parsed: challenge={challengeToken}, authProto={ctx.AuthProtocol}");
                 var data = BuildConnectPacket(ep);
@@ -171,7 +205,7 @@ public class GoldsrcConnection : IDisposable
                 string challengeToken = parts[1];
                 _logger.LogDebug($"[Challenge] Format legacy: challenge={challengeToken}, parts={parts.Length}");
 
-                ctx.Challenge = Encoding.ASCII.GetBytes(challengeToken);
+                ctx.Challenge = Encoding.UTF8.GetBytes(challengeToken);
                 var data = BuildConnectPacket(ep);
                 _logger.LogDebug($"[Connect] sending connect packet (legacy), len={data.Length}");
                 await _socket.SendAsync(new ReadOnlyMemory<byte>(data), ep, ct);
@@ -212,7 +246,7 @@ public class GoldsrcConnection : IDisposable
     private byte[] BuildConnectPacket(IPEndPoint ep)
     {
         var ctx = _contexts[ep];
-        var challengeStr = Encoding.ASCII.GetString(ctx.Challenge);
+        var challengeStr = Encoding.UTF8.GetString(ctx.Challenge);
         var authProto = ctx.AuthProtocol;
 
         byte[]? ticketBytes = null;
@@ -250,7 +284,7 @@ public class GoldsrcConnection : IDisposable
             ? $"\\prot\\{authProto}\\unique\\-1\\raw\\{rawValue}\\cdkey\\{cdKeyHash}"
             : $"\\prot\\{authProto}\\unique\\-1\\raw\\{rawValue}";
 
-        var userInfo = "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000\\hltv\\0";
+        var userInfo = UserInfo;
         _logger.LogDebug($"[Connect] packet: proto={ProtocolVersion}, challenge={challengeStr}, authProto={authProto}, rawAuth={rawValue.Length}, ticket={(ticketBytes != null ? ticketBytes.Length : 0)}");
 
         var result = BuildRawConnectPacket(
@@ -268,13 +302,13 @@ public class GoldsrcConnection : IDisposable
         using var ms = new MemoryStream();
 
         ms.Write([0xFF, 0xFF, 0xFF, 0xFF]);
-        ms.Write(Encoding.ASCII.GetBytes(connectPrefix));
+        ms.Write(Encoding.UTF8.GetBytes(connectPrefix));
         ms.WriteByte((byte)'\"');
-        ms.Write(Encoding.ASCII.GetBytes(protoInfo));
+        ms.Write(Encoding.UTF8.GetBytes(protoInfo));
         ms.WriteByte((byte)'\"');
         ms.WriteByte((byte)' ');
         ms.WriteByte((byte)'\"');
-        ms.Write(Encoding.ASCII.GetBytes(userInfo));
+        ms.Write(Encoding.UTF8.GetBytes(userInfo));
         ms.WriteByte((byte)'\"');
         ms.WriteByte((byte)'\n');
 
@@ -446,6 +480,7 @@ public class GoldsrcConnection : IDisposable
                 if (offset + 4 > size) { _logger.LogWarning("[UpdateUserInfo] buffer overflow at byte 4"); return SessionState.Connected; }
                 offset += 4;
                 string uui = MessageReader.ReadString(ref data, ref offset, size);
+                UserInfo = uui;
                 _logger.LogDebug($"[UpdateUserInfo] userInfo=\"{uui[..Math.Min(uui.Length, 100)]}\"");
                 if (offset + 16 > size) { _logger.LogWarning("[UpdateUserInfo] buffer overflow at 16"); return SessionState.Connected; }
                 offset += 16;
@@ -691,7 +726,7 @@ public class GoldsrcConnection : IDisposable
         uint srcSeq = ctx.SrcSequence++;
 
         var cmdBytes = new List<byte> { (byte)cmd };
-        cmdBytes.AddRange(Encoding.ASCII.GetBytes(str));
+        cmdBytes.AddRange(Encoding.UTF8.GetBytes(str));
         cmdBytes.Add(0);
 
         var payload = new byte[cmdBytes.Count + MessageConstants.ConnectedHeadSize];

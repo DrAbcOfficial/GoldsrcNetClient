@@ -31,13 +31,13 @@ public static class MessageReader
             if (data[offset] == 0)
             {
                 offset++;
-                return System.Text.Encoding.ASCII.GetString(data, start, offset - start - 1);
+                return System.Text.Encoding.UTF8.GetString(data, start, offset - start - 1);
             }
             offset++;
         }
 
         offset = size;
-        return System.Text.Encoding.ASCII.GetString(data, start, size - start);
+        return System.Text.Encoding.UTF8.GetString(data, start, size - start);
     }
 
     public static bool ReadBytes(ref byte[] data, ref int offset, int size, Span<byte> dest)

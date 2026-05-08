@@ -29,7 +29,7 @@ public static class MessageWriter
     public static void WriteStringCmd(List<byte> output, ClientCommandType cmd, string str)
     {
         output.Add((byte)cmd);
-        output.AddRange(Encoding.ASCII.GetBytes(str));
+        output.AddRange(Encoding.UTF8.GetBytes(str));
         output.Add(0);
     }
 }
