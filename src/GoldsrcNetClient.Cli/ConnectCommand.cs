@@ -26,6 +26,9 @@ public partial class ConnectCommand : ICommand
     [CommandOption("appid", Description = "Steam AppId for authentication. Default: 70 (Half-Life).")]
     public uint AppId { get; set; } = 70;
 
+    [CommandOption("timeout", 't', Description = "Connection timeout in seconds. Default: 5.")]
+    public int TimeoutSeconds { get; set; } = 5;
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -40,13 +43,14 @@ public partial class ConnectCommand : ICommand
 
         if (UseSteam)
         {
-            console.Output.WriteLine("Initializing Steam...");
+            console.Output.WriteLine($"Initializing Steam (AppID {AppId})...");
             var steamAuth = new FacepunchSteamAuthProvider(AppId);
             authDisposable = steamAuth;
 
             if (steamAuth.IsAvailable)
             {
-                console.Output.WriteLine("Steam authentication enabled.");
+                var authLen = steamAuth.GetRawAuthData().Length;
+                console.Output.WriteLine($"Steam authentication enabled (ticket: {authLen} bytes).");
                 authProvider = steamAuth;
             }
             else
@@ -56,8 +60,13 @@ public partial class ConnectCommand : ICommand
                 authDisposable = null;
             }
         }
+        else
+        {
+            if (Debug)
+                console.Error.WriteLine("[DEBUG] Steam auth not enabled, using basic auth (raw='steam').");
+        }
 
-        console.Output.WriteLine($"Connecting to {Host}:{Port}...");
+        console.Output.WriteLine($"Connecting to {Host}:{Port} (timeout: {TimeoutSeconds}s)...");
 
         using var client = new GoldsrcConnection(authProvider);
         client.OnPrint += msg => Emit("print", new { text = msg }, console);
@@ -74,19 +83,40 @@ public partial class ConnectCommand : ICommand
                 console.Error.WriteLine($"[DEBUG] {msg}");
         };
 
-        var cts = new CancellationTokenSource();
-        console.RegisterCancellationHandler().Register(() => cts.Cancel());
+        var userCts = new CancellationTokenSource();
+        console.RegisterCancellationHandler().Register(() =>
+        {
+            if (Debug)
+                console.Error.WriteLine("[DEBUG] Ctrl+C received, cancelling...");
+            userCts.Cancel();
+        });
 
         try
         {
-            await client.ConnectAsync(Host, Port, cts.Token);
+            using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(TimeoutSeconds)))
+            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(userCts.Token, timeoutCts.Token))
+            {
+                if (Debug)
+                    console.Error.WriteLine($"[DEBUG] Connecting with timeout={TimeoutSeconds}s, using linked cancellation token.");
+
+                await client.ConnectAsync(Host, Port, linkedCts.Token);
+            }
+
             console.Output.WriteLine("Connected. Press Ctrl+C to disconnect.");
-            await Task.Delay(Timeout.Infinite, cts.Token);
+            await Task.Delay(Timeout.Infinite, userCts.Token);
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) when (!userCts.IsCancellationRequested)
+        {
+            console.Error.WriteLine($"Error: Connection timed out after {TimeoutSeconds} seconds.");
+        }
+        catch (OperationCanceledException)
+        {
+        }
         catch (Exception ex)
         {
-            console.Error.WriteLine($"Error: {ex.Message}");
+            console.Error.WriteLine($"Error: {ex.GetType().Name}: {ex.Message}");
+            if (Debug)
+                console.Error.WriteLine($"[DEBUG] Stack trace: {ex}");
         }
 
         console.Output.WriteLine("Disconnected.");

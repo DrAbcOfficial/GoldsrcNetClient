@@ -12,8 +12,10 @@ namespace GoldsrcNetClient.Core.Network;
 
 public class GoldsrcConnection : IDisposable
 {
-    private static readonly byte[] GetChallengePacket =
+    private static readonly byte[] GetChallengeSteamPacket =
         [0xFF, 0xFF, 0xFF, 0xFF, (byte)'g', (byte)'e', (byte)'t', (byte)'c', (byte)'h', (byte)'a', (byte)'l', (byte)'l', (byte)'e', (byte)'n', (byte)'g', (byte)'e', (byte)' ', (byte)'s', (byte)'t', (byte)'e', (byte)'a', (byte)'m', (byte)'\n'];
+    private static readonly byte[] GetChallengePacket =
+        [0xFF, 0xFF, 0xFF, 0xFF, (byte)'g', (byte)'e', (byte)'t', (byte)'c', (byte)'h', (byte)'a', (byte)'l', (byte)'l', (byte)'e', (byte)'n', (byte)'g', (byte)'e', (byte)'\n'];
 
     private const byte AuthProtocolSteam = 3;
     private const byte AuthProtocolWon = 1;
@@ -42,22 +44,29 @@ public class GoldsrcConnection : IDisposable
 
     public async Task ConnectAsync(string host, int port = 27015, CancellationToken ct = default)
     {
+        OnDebug?.Invoke($"[State] Begin -> resolving {host}:{port}");
         var addresses = await Dns.GetHostAddressesAsync(host, ct);
         var ep = new IPEndPoint(addresses[0], port);
+        OnDebug?.Invoke($"[DNS] resolved {host} -> {ep}");
         _sessions[ep] = SessionState.GetChallenge;
         _contexts[ep] = new ConnectionContext();
 
-        await _socket.SendAsync(new ReadOnlyMemory<byte>(GetChallengePacket), ep, ct);
+        OnDebug?.Invoke($"[State] Begin -> GetChallenge. Sending getchallenge (steam={_authProvider.IsAvailable}, authProto={_authProvider.GetAuthProtocol()})");
+        var challengePacket = _authProvider.IsAvailable ? GetChallengeSteamPacket : GetChallengePacket;
+        await _socket.SendAsync(new ReadOnlyMemory<byte>(challengePacket), ep, ct);
 
         bool done = false;
 
+        OnDebug?.Invoke("[Loop] entering receive loop");
         while (!done && !ct.IsCancellationRequested)
         {
+            OnDebug?.Invoke("[Loop] waiting for packet...");
             var result = await _socket.ReceiveAsync(ct);
             var data = result.Buffer;
             var len = data.Length;
             var from = result.RemoteEndPoint;
 
+            OnDebug?.Invoke($"[Loop] received {len} bytes from {from}");
             if (!ep.Equals(from)) continue;
             if (len < 4) continue;
 
@@ -71,9 +80,16 @@ public class GoldsrcConnection : IDisposable
                 OnDebug?.Invoke($"connectionless: {payload[..Math.Min(payload.Length, 200)]}");
                 _sessions[ep] = await ProcessConnectionless(ep, payload, ct);
                 if (_sessions[ep] == SessionState.Connected)
+                {
+                    OnDebug?.Invoke("[State] -> Connected. Handshake complete.");
                     done = true;
+                }
             }
-            else if (header != MessageConstants.SplitMarker)
+            else if (header == MessageConstants.SplitMarker)
+            {
+                OnDebug?.Invoke($"[Fragment] received split packet header (len={len}), fragment reassembly not yet implemented");
+            }
+            else
             {
                 var ctx = _contexts[ep];
                 uint srcSeq = header & MessageConstants.SequenceMask;
@@ -89,6 +105,7 @@ public class GoldsrcConnection : IDisposable
                 {
                     byte[] payload = new byte[payloadLen];
                     Array.Copy(data, offset, payload, 0, payloadLen);
+                    OnDebug?.Invoke($"[Munge] UnMunge2 payload len={payloadLen}, seq={(int)(srcSeq & 0xFF)}");
                     MungeEngine.UnMunge2(payload, payloadLen, (int)(srcSeq & 0xFF));
 
                     _sessions[ep] = ProcessConnected(ep, ref srcSeq, ref dstSeq, payload, payloadLen);
@@ -108,14 +125,20 @@ public class GoldsrcConnection : IDisposable
 
             if (parts.Length >= 2 && parts[0].StartsWith('A'))
             {
-                string challengeToken = parts[1];
-                OnDebug?.Invoke($"challenge response (A): challenge={challengeToken}, parts[{parts.Length}]");
+                string challengeFromMarker = parts[0][1..];
+                string challengeFromField = parts[1];
+
+                ctx.AuthProtocol = parts.Length > 2 && int.TryParse(parts[2], out int ap) ? (byte)ap : AuthProtocolSteam;
+                OnDebug?.Invoke($"[Challenge] Format A: markerHex={challengeFromMarker}, field2={challengeFromField}, authProto={ctx.AuthProtocol}, parts={parts.Length}");
+
+                string challengeToken = challengeFromField;
+                OnDebug?.Invoke($"[Challenge] using field2 as challenge: {challengeToken}");
 
                 ctx.Challenge = Encoding.ASCII.GetBytes(challengeToken);
-                ctx.AuthProtocol = parts.Length > 2 && int.TryParse(parts[2], out int ap) ? (byte)ap : AuthProtocolSteam;
 
-                var data = BuildConnectPacket(ctx.Challenge);
-                OnDebug?.Invoke("sending connect packet...");
+                OnDebug?.Invoke($"[Challenge] parsed: challenge={challengeToken}, authProto={ctx.AuthProtocol}");
+                var data = BuildConnectPacket(ep);
+                OnDebug?.Invoke($"[Connect] sending connect packet, len={data.Length}");
                 await _socket.SendAsync(new ReadOnlyMemory<byte>(data), ep, ct);
                 return SessionState.Connect0;
             }
@@ -123,15 +146,16 @@ public class GoldsrcConnection : IDisposable
             if (parts.Length >= 2 && char.IsDigit(parts[0][0]))
             {
                 string challengeToken = parts[1];
-                OnDebug?.Invoke($"challenge response (legacy): challenge={challengeToken}");
+                OnDebug?.Invoke($"[Challenge] Format legacy: challenge={challengeToken}, parts={parts.Length}");
 
                 ctx.Challenge = Encoding.ASCII.GetBytes(challengeToken);
-                var data = BuildConnectPacket(ctx.Challenge);
+                var data = BuildConnectPacket(ep);
+                OnDebug?.Invoke($"[Connect] sending connect packet (legacy), len={data.Length}");
                 await _socket.SendAsync(new ReadOnlyMemory<byte>(data), ep, ct);
                 return SessionState.Connect0;
             }
 
-            OnDebug?.Invoke($"unexpected challenge response: {payload}");
+            OnDebug?.Invoke($"[Challenge] unexpected response (len={parts.Length}, first={parts[0]}): {payload}");
         }
         else if (state == SessionState.Connect0)
         {
@@ -141,32 +165,63 @@ public class GoldsrcConnection : IDisposable
             if (msgId.StartsWith('B'))
             {
                 ctx.UserId = parts.Length > 1 && int.TryParse(parts[1], out int uid) ? uid : 0;
-                OnDebug?.Invoke($"connection approval (B): userId={ctx.UserId}");
+                OnDebug?.Invoke($"[Connect0] Approval (B): userId={ctx.UserId}, parts={parts.Length}, payload={payload}");
                 OnPrint?.Invoke($"Connection accepted by {ep}");
 
+                OnDebug?.Invoke($"[State] Connect0 -> Connected. Sending 'new' stringcmd");
                 await SendConnectedAsync(ep, ClientCommandType.StringCmd, "new", ct);
                 return SessionState.Connected;
             }
 
-            OnDebug?.Invoke($"connect answer (generic): {payload}");
+            if (msgId.StartsWith('9') || payload.Contains("Bad ", StringComparison.OrdinalIgnoreCase))
+            {
+                OnDebug?.Invoke($"[Connect0] Server rejected connection: {payload}");
+                OnPrint?.Invoke($"Server rejected connection: {payload}");
+                return SessionState.Connect0;
+            }
+
+            OnDebug?.Invoke($"[Connect0] Generic answer (not B): {payload}");
             return SessionState.Connected;
         }
 
         return state;
     }
 
-    private byte[] BuildConnectPacket(byte[] challenge)
+    private byte[] BuildConnectPacket(IPEndPoint ep)
     {
-        var challengeStr = Encoding.ASCII.GetString(challenge);
-        var connectHeader = $"\xFF\xFF\xFF\xFFconnect {ProtocolVersion} {challengeStr} ";
+        var ctx = _contexts[ep];
+        var challengeStr = Encoding.ASCII.GetString(ctx.Challenge);
+        var connectPrefix = $"connect {ProtocolVersion} {challengeStr} ";
 
-        var authProto = _authProvider.GetAuthProtocol();
+        var authProto = ctx.AuthProtocol;
         var rawAuth = _authProvider.GetRawAuthData();
+        if (rawAuth == "steam" && !_authProvider.IsAvailable)
+        {
+            if (authProto == 2)
+            {
+                rawAuth = "00000000000000000000000000000000";
+                OnDebug?.Invoke($"[Connect] generated fake hashed CD key (32 zero hex chars) for authProto=2");
+            }
+            else if (authProto == 1)
+            {
+                rawAuth = "0000000000000";
+                OnDebug?.Invoke($"[Connect] generated fake WON CD key for authProto=1");
+            }
+        }
         var protoInfo = $"\\prot\\{authProto}\\unique\\-1\\raw\\{rawAuth}";
         var userInfo = "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000";
 
-        var full = $"{connectHeader}\"{protoInfo}\" \"{userInfo}\"\n";
-        return Encoding.ASCII.GetBytes(full);
+        var full = $"{connectPrefix}\"{protoInfo}\" \"{userInfo}\"\n";
+        OnDebug?.Invoke($"[Connect] packet: proto={ProtocolVersion}, challenge={challengeStr}, authProto={authProto}, rawAuth=[{rawAuth.Length} bytes], protoInfo={protoInfo}");
+
+        var result = new byte[4 + full.Length];
+        result[0] = 0xFF;
+        result[1] = 0xFF;
+        result[2] = 0xFF;
+        result[3] = 0xFF;
+        Encoding.ASCII.GetBytes(full, 0, full.Length, result, 4);
+        OnDebug?.Invoke($"[Connect] raw hex: {Convert.ToHexString(result.AsSpan(0, Math.Min(result.Length, 64)))}");
+        return result;
     }
 
     private SessionState ProcessConnected(IPEndPoint ep, ref uint srcSequence, ref uint dstSequence,
@@ -174,21 +229,31 @@ public class GoldsrcConnection : IDisposable
     {
         var ctx = _contexts[ep];
 
+        OnDebug?.Invoke($"[Connected] processing {size} bytes, srcSeq={srcSequence}, dstSeq={dstSequence}");
+
         int offset = 0;
         while (offset < size)
         {
             byte dataType = data[offset++];
+            int dataLen = size - offset;
+            string typeName = Enum.IsDefined(typeof(ServerMessageType), dataType) ? ((ServerMessageType)dataType).ToString() : $"0x{dataType:X2}";
+            OnDebug?.Invoke($"[Connected] type={typeName} (0x{dataType:X2}), remaining={dataLen}");
 
             if (dataType == (byte)ServerMessageType.Nop) { }
             else if (dataType == (byte)ServerMessageType.Print)
             {
                 string msg = MessageReader.ReadString(ref data, ref offset, size);
+                OnDebug?.Invoke($"[Print] msg=\"{msg[..Math.Min(msg.Length, 200)]}\"");
                 OnPrint?.Invoke(msg);
             }
             else if (dataType == (byte)ServerMessageType.ServerInfo)
             {
                 int structSize = 33;
-                if (offset + structSize > size) return SessionState.Connected;
+                if (offset + structSize > size)
+                {
+                    OnDebug?.Invoke($"[ServerInfo] buffer overflow: offset={offset}, need={structSize}, size={size}");
+                    return SessionState.Connected;
+                }
 
                 ServerInfoData si;
                 unsafe
@@ -204,8 +269,11 @@ public class GoldsrcConnection : IDisposable
 
                 byte[] crcBytes = new byte[4];
                 BitConverter.GetBytes(si.Munge3WorldmapCrc).CopyTo(crcBytes, 0);
-                MungeEngine.UnMunge3(crcBytes, 4, (-1 - ctx.PlayerNumber) & 0xFF);
+                uint unmungeSeq = (uint)((-1 - ctx.PlayerNumber) & 0xFF);
+                OnDebug?.Invoke($"[ServerInfo] proto={si.ProtocolVersion}, spawnCount={si.SpawnCount}, maxClients={si.MaxClients}, playerNum={si.PlayerNumber}, worldmapCrcRaw=0x{si.Munge3WorldmapCrc:X8}, unmungeSeq={unmungeSeq}");
+                MungeEngine.UnMunge3(crcBytes, 4, (int)((-1 - ctx.PlayerNumber) & 0xFF));
                 ctx.WorldmapCrc = BitConverter.ToUInt32(crcBytes);
+                OnDebug?.Invoke($"[ServerInfo] worldmapCrcUnMunaged=0x{ctx.WorldmapCrc:X8}");
 
                 for (int i = 0; i < 4; i++)
                     MessageReader.ReadString(ref data, ref offset, size);
@@ -218,28 +286,45 @@ public class GoldsrcConnection : IDisposable
             else if (dataType == (byte)ServerMessageType.DeltaDescription)
             {
                 string name = MessageReader.ReadString(ref data, ref offset, size);
+                OnDebug?.Invoke($"[DeltaDescription] deltaName=\"{name}\"");
                 var dt = DeltaDefinitions.Find(name);
-                if (dt == null) return SessionState.Connected;
+                if (dt == null)
+                {
+                    OnDebug?.Invoke($"[DeltaDescription] unknown delta \"{name}\", skipping");
+                    return SessionState.Connected;
+                }
 
                 int bitIdx = 0;
                 uint fieldCount = 0;
                 if (!BitReader.ReadBits(data, ref bitIdx, size, ref fieldCount, 16))
+                {
+                    OnDebug?.Invoke($"[DeltaDescription] failed reading fieldCount");
                     return SessionState.Connected;
+                }
+                OnDebug?.Invoke($"[DeltaDescription] fieldCount={fieldCount}");
 
                 for (uint f = 0; f < fieldCount; f++)
                 {
                     int parseBitIdx = 0;
                     if (!ParseDeltaFieldDescriptions(data, size, ref parseBitIdx))
+                    {
+                        OnDebug?.Invoke($"[DeltaDescription] failed parsing field {f}");
                         return SessionState.Connected;
+                    }
                 }
 
                 offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+                OnDebug?.Invoke($"[DeltaDescription] done, new offset={offset}");
             }
             else if (dataType == (byte)ServerMessageType.NewMoveVars)
             {
                 int mvSize;
                 unsafe { mvSize = sizeof(NewMoveVarsData); }
-                if (offset + mvSize > size) return SessionState.Connected;
+                if (offset + mvSize > size)
+                {
+                    OnDebug?.Invoke($"[NewMoveVars] buffer overflow: offset={offset}, need={mvSize}, size={size}");
+                    return SessionState.Connected;
+                }
 
                 unsafe
                 {
@@ -249,17 +334,26 @@ public class GoldsrcConnection : IDisposable
                 }
 
                 MessageReader.ReadString(ref data, ref offset, size);
+                OnDebug?.Invoke($"[NewMoveVars] done, structSize={mvSize}");
             }
             else if (dataType == (byte)ServerMessageType.SetView)
             {
-                if (offset + 2 > size) return SessionState.Connected;
+                if (offset + 2 > size)
+                {
+                    OnDebug?.Invoke($"[SetView] buffer overflow: offset={offset}, size={size}");
+                    return SessionState.Connected;
+                }
                 offset += 2;
             }
             else if (dataType == (byte)ServerMessageType.NewUserMsg)
             {
                 int msgSize;
                 unsafe { msgSize = sizeof(NewUserMsgData); }
-                if (offset + msgSize > size) return SessionState.Connected;
+                if (offset + msgSize > size)
+                {
+                    OnDebug?.Invoke($"[NewUserMsg] buffer overflow: offset={offset}, need={msgSize}, size={size}");
+                    return SessionState.Connected;
+                }
 
                 unsafe
                 {
@@ -267,45 +361,53 @@ public class GoldsrcConnection : IDisposable
                         _ = *(NewUserMsgData*)p;
                     offset += msgSize;
                 }
+                OnDebug?.Invoke($"[NewUserMsg] done, structSize={msgSize}");
             }
             else if (dataType == (byte)ServerMessageType.StuffText)
             {
-                MessageReader.ReadString(ref data, ref offset, size);
+                string st = MessageReader.ReadString(ref data, ref offset, size);
+                OnDebug?.Invoke($"[StuffText] text=\"{st[..Math.Min(st.Length, 200)]}\"");
             }
             else if (dataType == (byte)ServerMessageType.UpdateUserInfo)
             {
-                if (offset + 1 > size) return SessionState.Connected;
+                if (offset + 1 > size) { OnDebug?.Invoke("[UpdateUserInfo] buffer overflow at byte 1"); return SessionState.Connected; }
                 offset += 1;
-                if (offset + 4 > size) return SessionState.Connected;
+                if (offset + 4 > size) { OnDebug?.Invoke("[UpdateUserInfo] buffer overflow at byte 4"); return SessionState.Connected; }
                 offset += 4;
-                MessageReader.ReadString(ref data, ref offset, size);
-                if (offset + 16 > size) return SessionState.Connected;
+                string uui = MessageReader.ReadString(ref data, ref offset, size);
+                OnDebug?.Invoke($"[UpdateUserInfo] userInfo=\"{uui[..Math.Min(uui.Length, 100)]}\"");
+                if (offset + 16 > size) { OnDebug?.Invoke("[UpdateUserInfo] buffer overflow at 16"); return SessionState.Connected; }
                 offset += 16;
             }
             else if (dataType == (byte)ServerMessageType.ResourceRequest)
             {
-                if (offset + 4 > size) return SessionState.Connected;
+                if (offset + 4 > size) { OnDebug?.Invoke("[ResourceRequest] buffer overflow"); return SessionState.Connected; }
                 ctx.SpawnCount = BitConverter.ToUInt32(data, offset);
                 offset += 4;
-                if (offset + 4 > size) return SessionState.Connected;
+                if (offset + 4 > size) { OnDebug?.Invoke("[ResourceRequest] buffer overflow after spawnCount"); return SessionState.Connected; }
+                uint resUnknown = BitConverter.ToUInt32(data, offset);
                 offset += 4;
+                OnDebug?.Invoke($"[ResourceRequest] spawnCount={ctx.SpawnCount}, unknown={resUnknown}");
             }
             else if (dataType == (byte)ServerMessageType.ResourceLocation)
             {
-                MessageReader.ReadString(ref data, ref offset, size);
+                string loc = MessageReader.ReadString(ref data, ref offset, size);
+                OnDebug?.Invoke($"[ResourceLocation] location=\"{loc}\"");
             }
             else if (dataType == (byte)ServerMessageType.ResourceList)
             {
+                int listStart = offset;
                 ProcessResourceList(ctx, ref data, ref offset, size);
+                OnDebug?.Invoke($"[ResourceList] count={ctx.Resources.Length}, dataBytes={offset - listStart}");
                 OnResourceList?.Invoke(this, ctx.Resources);
             }
             else if (dataType == (byte)ServerMessageType.TempEntity)
             {
-                if (offset + 1 > size) return SessionState.Connected;
+                if (offset + 1 > size) { OnDebug?.Invoke("[TempEntity] buffer overflow"); return SessionState.Connected; }
                 offset += 1;
                 for (int i = 0; i < 3; i++)
                 {
-                    if (offset + 2 > size) return SessionState.Connected;
+                    if (offset + 2 > size) { OnDebug?.Invoke($"[TempEntity] buffer overflow at coord {i}"); return SessionState.Connected; }
                     offset += 2;
                 }
             }
@@ -315,18 +417,24 @@ public class GoldsrcConnection : IDisposable
             }
             else if (dataType == (byte)ServerMessageType.SendCvarValue2)
             {
-                if (offset + 4 > size) return SessionState.Connected;
+                if (offset + 4 > size) { OnDebug?.Invoke("[SendCvarValue2] buffer overflow"); return SessionState.Connected; }
+                uint requestId = BitConverter.ToUInt32(data, offset);
                 offset += 4;
-                MessageReader.ReadString(ref data, ref offset, size);
+                string cvarName = MessageReader.ReadString(ref data, ref offset, size);
+                OnDebug?.Invoke($"[SendCvarValue2] requestId={requestId}, cvar=\"{cvarName}\"");
             }
             else if (dataType == (byte)ServerMessageType.SpawnBaseline)
             {
                 int bitIdx = 0;
+                int entityCount = 0;
                 while (true)
                 {
                     uint entityNumber = 0;
                     if (!BitReader.ReadBits(data, ref bitIdx, size, ref entityNumber, 11))
+                    {
+                        OnDebug?.Invoke($"[SpawnBaseline] failed reading entityNumber at count={entityCount}");
                         return SessionState.Connected;
+                    }
 
                     int maxEntity = (1 << 11) - 1;
                     if (entityNumber == maxEntity)
@@ -337,7 +445,10 @@ public class GoldsrcConnection : IDisposable
 
                     uint entityType = 0;
                     if (!BitReader.ReadBits(data, ref bitIdx, size, ref entityType, 2))
+                    {
+                        OnDebug?.Invoke($"[SpawnBaseline] failed reading entityType at entity={entityNumber}");
                         return SessionState.Connected;
+                    }
 
                     DeltaType dt;
                     if ((entityType & 1) != 0)
@@ -351,22 +462,27 @@ public class GoldsrcConnection : IDisposable
                     }
 
                     ParseDeltaFields(dt, data, size, ref bitIdx);
+                    entityCount++;
                 }
 
                 uint baselineCount = 0;
                 BitReader.ReadBits(data, ref bitIdx, size, ref baselineCount, 6);
+                OnDebug?.Invoke($"[SpawnBaseline] entities={entityCount}, baselineCount={baselineCount}");
                 for (uint ei = 0; ei < baselineCount; ei++)
                     ParseDeltaFields(DeltaDefinitions.EntityState, data, size, ref bitIdx);
 
                 offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+                OnDebug?.Invoke($"[SpawnBaseline] done, totalBits={bitIdx}, newOffset={offset}");
             }
             else if (dataType == (byte)ServerMessageType.Time)
             {
+                float time = BitConverter.ToSingle(data, offset);
                 offset += 4;
+                OnDebug?.Invoke($"[Time] time={time:F2}");
             }
             else if (dataType == (byte)ServerMessageType.LightStyle)
             {
-                if (offset + 1 > size) return SessionState.Connected;
+                if (offset + 1 > size) { OnDebug?.Invoke("[LightStyle] buffer overflow"); return SessionState.Connected; }
                 offset += 1;
                 MessageReader.ReadString(ref data, ref offset, size);
             }
@@ -374,7 +490,7 @@ public class GoldsrcConnection : IDisposable
             {
                 for (int i = 0; i < 3; i++)
                 {
-                    if (offset + 2 > size) return SessionState.Connected;
+                    if (offset + 2 > size) { OnDebug?.Invoke($"[SetAngle] buffer overflow at angle {i}"); return SessionState.Connected; }
                     offset += 2;
                 }
             }
@@ -387,9 +503,11 @@ public class GoldsrcConnection : IDisposable
                 {
                     uint deltaSeq = 0;
                     if (!BitReader.ReadBits(data, ref bitIdx, size, ref deltaSeq, 8)) return SessionState.Connected;
+                    OnDebug?.Invoke($"[ClientData] deltaSeq={deltaSeq}");
                 }
                 ParseDeltaFields(DeltaDefinitions.ClientData, data, size, ref bitIdx);
 
+                int weaponCount = 0;
                 while (true)
                 {
                     uint haveDelta = 0;
@@ -398,19 +516,23 @@ public class GoldsrcConnection : IDisposable
                     uint index = 0;
                     if (!BitReader.ReadBits(data, ref bitIdx, size, ref index, 6)) return SessionState.Connected;
                     ParseDeltaFields(DeltaDefinitions.WeaponData, data, size, ref bitIdx);
+                    weaponCount++;
                 }
+                OnDebug?.Invoke($"[ClientData] done, weaponDeltas={weaponCount}");
                 offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
             }
             else if (dataType == (byte)ServerMessageType.SignOnNum)
             {
-                if (offset + 1 > size) return SessionState.Connected;
-                offset += 1;
+                if (offset + 1 > size) { OnDebug?.Invoke("[SignOnNum] buffer overflow"); return SessionState.Connected; }
+                byte signOn = data[offset++];
+                OnDebug?.Invoke($"[SignOnNum] value={signOn}");
             }
             else if (dataType == (byte)ServerMessageType.VoiceInit)
             {
-                MessageReader.ReadString(ref data, ref offset, size);
-                if (offset + 1 > size) return SessionState.Connected;
-                offset += 1;
+                string codec = MessageReader.ReadString(ref data, ref offset, size);
+                if (offset + 1 > size) { OnDebug?.Invoke("[VoiceInit] buffer overflow"); return SessionState.Connected; }
+                byte quality = data[offset++];
+                OnDebug?.Invoke($"[VoiceInit] codec=\"{codec}\", quality={quality}");
             }
             else if (dataType == (byte)ServerMessageType.Sound)
             {
@@ -451,36 +573,40 @@ public class GoldsrcConnection : IDisposable
                     uint pitch = 0;
                     if (!BitReader.ReadBits(data, ref bitIdx, size, ref pitch, 8)) return SessionState.Connected;
                 }
+                OnDebug?.Invoke($"[Sound] channel={channel}, entity={entity}, soundNum={soundNum}, fieldMask=0x{fieldMask:X4}");
                 offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
             }
             else if (dataType == (byte)ServerMessageType.Customization)
             {
-                if (offset + 1 > size) return SessionState.Connected;
+                if (offset + 1 > size) { OnDebug?.Invoke("[Customization] buffer overflow at 1"); return SessionState.Connected; }
                 offset += 1;
-                if (offset + 1 > size) return SessionState.Connected;
+                if (offset + 1 > size) { OnDebug?.Invoke("[Customization] buffer overflow at 2"); return SessionState.Connected; }
                 offset += 1;
                 MessageReader.ReadString(ref data, ref offset, size);
-                if (offset + 2 > size) return SessionState.Connected;
+                if (offset + 2 > size) { OnDebug?.Invoke("[Customization] buffer overflow at 3"); return SessionState.Connected; }
                 offset += 2;
-                if (offset + 4 > size) return SessionState.Connected;
+                if (offset + 4 > size) { OnDebug?.Invoke("[Customization] buffer overflow at 4"); return SessionState.Connected; }
                 offset += 4;
-                if (offset + 1 > size) return SessionState.Connected;
+                if (offset + 1 > size) { OnDebug?.Invoke("[Customization] buffer overflow at 5"); return SessionState.Connected; }
                 offset += 1;
             }
             else if (dataType == (byte)ServerMessageType.Choke) { }
             else if (dataType == 'B' && offset + 2 < size && data[offset] == 'Z' && data[offset + 1] == '2' && data[offset + 2] == 0)
             {
+                OnDebug?.Invoke("[BZ2] compressed data detected, skipping");
                 OnPrint?.Invoke("BZ2 compressed data received (decompression not yet supported)");
                 offset = size;
             }
             else
             {
                 offset--;
+                OnDebug?.Invoke($"[Connected] Unknown data type: 0x{dataType:X2} at offset={offset}, remaining={size - offset}");
                 OnPrint?.Invoke($"Unknown data type at ProcessServerData: 0x{dataType:X2}");
                 return SessionState.Connected;
             }
         }
 
+        OnDebug?.Invoke($"[Connected] processed all {size} bytes successfully");
         return SessionState.Connected;
     }
 
@@ -493,7 +619,6 @@ public class GoldsrcConnection : IDisposable
         cmdBytes.AddRange(Encoding.ASCII.GetBytes(str));
         cmdBytes.Add(0);
 
-        MungeEngine.Munge2(cmdBytes.ToArray(), cmdBytes.Count, (int)(srcSeq & 0xFF));
         cmdBytes = [.. MungeBytes(cmdBytes, (int)(srcSeq & 0xFF))];
 
         var payload = new byte[cmdBytes.Count + MessageConstants.ConnectedHeadSize];
@@ -501,7 +626,7 @@ public class GoldsrcConnection : IDisposable
         BitConverter.GetBytes(ctx.DstSequence & MessageConstants.SequenceMask).CopyTo(payload, 4);
         cmdBytes.CopyTo(payload, MessageConstants.ConnectedHeadSize);
 
-        OnDebug?.Invoke($"sending connected: cmd={cmd}, str={str}, seq={srcSeq}");
+        OnDebug?.Invoke($"[SendConnected] cmd={cmd}(0x{(byte)cmd:X2}), str=\"{str}\", srcSeq={srcSeq}, dstSeq={ctx.DstSequence}, mungeKey={srcSeq & 0xFF}, totalLen={payload.Length}");
         await _socket.SendAsync(new ReadOnlyMemory<byte>(payload), ep, ct);
     }
 
