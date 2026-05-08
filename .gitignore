@@ -1,0 +1,63 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.userosscache
+
+## Visual Studio
+.vs/
+*.rsuser
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild/
+*.dbmdl
+*.jfm
+*.pfx
+*.publishsettings
+
+## VS Code
+.vscode/
+*.code-workspace
+
+## Rider
+.idea/
+*.sln.iml
+
+## NuGet
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nupkg
+**/[Pp]ackages/repositories.config
+
+## NPM / Node (if any frontend)
+node_modules/
+
+## Code Coverage
+TestResults/
+*.coverlet.*
+coverage.*
+cobertura.xml
+
+## OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+## Environment
+*.env
+*.env.local
+.env.*.local
+
+## JetBrains
+*.DotSettings.user
+
+## Misc
+*.orig
+*.log

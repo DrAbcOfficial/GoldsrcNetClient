@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GoldsrcNetClient.Cli/GoldsrcNetClient.Cli.csproj" />
+    <Project Path="src/GoldsrcNetClient.Core/GoldsrcNetClient.Core.csproj" />
+    <Project Path="src/GoldsrcNetClient.Test/GoldsrcNetClient.Test.csproj" />
+  </Folder>
+</Solution>

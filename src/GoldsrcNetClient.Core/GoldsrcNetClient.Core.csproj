@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageId>GoldsrcNetClient.Core</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>GoldsrcNetClient</Authors>
+    <Description>GoldSrc (Half-Life 1) network client protocol library for .NET</Description>
+    <RepositoryUrl>https://github.com/7244/goldsrc-netclient</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+</Project>
