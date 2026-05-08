@@ -43,6 +43,7 @@ public class GoldsrcConnection : IDisposable
     private readonly Dictionary<IPEndPoint, SessionState> _sessions = [];
     private readonly Dictionary<IPEndPoint, ConnectionContext> _contexts = [];
     private readonly ISteamAuthProvider _authProvider;
+    private readonly IServerMessageHandler _messageHandler;
     private readonly ILogger<GoldsrcConnection> _logger;
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -130,11 +131,15 @@ public class GoldsrcConnection : IDisposable
     /// </summary>
     /// <param name="logger">Optional logger; defaults to <see cref="NullLogger{GoldsrcConnection}"/>.</param>
     /// <param name="authProvider">Steam auth provider; defaults to <see cref="NoSteamAuthProvider"/> which sends a fake key.</param>
+    /// <param name="messageHandler">Optional server message handler. Called for each message type in connected packets
+    /// before built-in processing. Return <c>true</c> to consume the message; <c>false</c> to fall through to the default parser.
+    /// Defaults to <see cref="DefaultServerMessageHandler"/> which always delegates to built-in logic.</param>
     /// <param name="localPort">Local UDP port to bind (0 = OS-assigned).</param>
-    public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null, int localPort = 0)
+    public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null, IServerMessageHandler? messageHandler = null, int localPort = 0)
     {
         _logger = logger ?? NullLogger<GoldsrcConnection>.Instance;
         _authProvider = authProvider ?? new NoSteamAuthProvider();
+        _messageHandler = messageHandler ?? new DefaultServerMessageHandler();
         _socket = new UdpClient(localPort);
     }
 
@@ -397,6 +402,9 @@ public class GoldsrcConnection : IDisposable
             int dataLen = size - offset;
             string typeName = Enum.IsDefined(typeof(ServerMessageType), dataType) ? ((ServerMessageType)dataType).ToString() : $"0x{dataType:X2}";
             _logger.LogDebug($"[Connected] type={typeName} (0x{dataType:X2}), remaining={dataLen}");
+
+            if (_messageHandler.HandleMessage(this, dataType, data, ref offset, size))
+                continue;
 
             if (dataType == (byte)ServerMessageType.Nop) { }
             else if (dataType == (byte)ServerMessageType.Bad)
