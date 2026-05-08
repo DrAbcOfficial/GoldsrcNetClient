@@ -393,54 +393,54 @@ public class GoldsrcConnection : IDisposable
     {
         var ctx = _contexts[ep];
 
+        var reader = new MessageReader(data, size);
         _logger.LogDebug($"[Connected] processing {size} bytes, srcSeq={srcSequence}, dstSeq={dstSequence}");
 
-        int offset = 0;
-        while (offset < size)
+        while (reader.Remaining > 0)
         {
-            byte dataType = data[offset++];
-            int dataLen = size - offset;
+            byte dataType = reader.Data[reader.Offset++];
+            int dataLen = reader.Remaining;
             string typeName = Enum.IsDefined(typeof(ServerMessageType), dataType) ? ((ServerMessageType)dataType).ToString() : $"0x{dataType:X2}";
             _logger.LogDebug($"[Connected] type={typeName} (0x{dataType:X2}), remaining={dataLen}");
 
-            if (_messageHandler.HandleMessage(this, dataType, data, ref offset, size))
+            if (_messageHandler.HandleMessage(this, dataType, reader))
                 continue;
 
             if (dataType == (byte)ServerMessageType.Nop) { }
             else if (dataType == (byte)ServerMessageType.Bad)
             {
                 _logger.LogWarning("[Bad] server sent bad message, consuming remaining data");
-                offset = size;
+                reader.Offset = reader.Size;
             }
             else if (dataType == (byte)ServerMessageType.Disconnect)
             {
-                string reason = MessageReader.ReadString(ref data, ref offset, size);
+                string reason = reader.ReadString();
                 _logger.LogWarning($"[Disconnect] server disconnected: reason=\"{reason}\"");
-                offset = size;
+                reader.Offset = reader.Size;
             }
             else if (dataType == (byte)ServerMessageType.Print)
             {
-                string msg = MessageReader.ReadString(ref data, ref offset, size);
+                string msg = reader.ReadString();
                 _logger.LogDebug($"[Print] msg=\"{msg[..Math.Min(msg.Length, 200)]}\"");
                 _logger.LogInformation(msg);
             }
             else if (dataType == (byte)ServerMessageType.ServerInfo)
             {
                 int structSize = 33;
-                if (offset + structSize > size)
+                if (reader.Offset + structSize > reader.Size)
                 {
-                    _logger.LogWarning($"[ServerInfo] buffer overflow: offset={offset}, need={structSize}, size={size}");
+                    _logger.LogWarning($"[ServerInfo] buffer overflow: offset={reader.Offset}, need={structSize}, size={reader.Size}");
                     return SessionState.Connected;
                 }
 
                 ServerInfoData si;
                 unsafe
                 {
-                    fixed (byte* p = &data[offset])
+                    fixed (byte* p = &reader.Data[reader.Offset])
                         si = *(ServerInfoData*)p;
                 }
 
-                offset += structSize;
+                reader.Offset += structSize;
 
                 ctx.MaxClients = si.MaxClients;
                 ctx.PlayerNumber = si.PlayerNumber;
@@ -454,16 +454,16 @@ public class GoldsrcConnection : IDisposable
                 _logger.LogDebug($"[ServerInfo] worldmapCrcUnMunaged=0x{ctx.WorldmapCrc:X8}");
 
                 for (int i = 0; i < 4; i++)
-                    MessageReader.ReadString(ref data, ref offset, size);
+                    reader.ReadString();
 
-                if (offset + 1 <= size)
-                    offset++;
+                if (reader.Offset + 1 <= reader.Size)
+                    reader.Offset++;
 
                 OnServerInfo?.Invoke(this, si);
             }
             else if (dataType == (byte)ServerMessageType.DeltaDescription)
             {
-                string name = MessageReader.ReadString(ref data, ref offset, size);
+                string name = reader.ReadString();
                 _logger.LogDebug($"[DeltaDescription] deltaName=\"{name}\"");
                 var dt = DeltaDefinitions.Find(name);
                 if (dt == null)
@@ -474,7 +474,7 @@ public class GoldsrcConnection : IDisposable
 
                 int bitIdx = 0;
                 uint fieldCount = 0;
-                if (!BitReader.ReadBits(data, ref bitIdx, size, ref fieldCount, 16))
+                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref fieldCount, 16))
                 {
                     _logger.LogWarning($"[DeltaDescription] failed reading fieldCount");
                     return SessionState.Connected;
@@ -484,122 +484,119 @@ public class GoldsrcConnection : IDisposable
                 for (uint f = 0; f < fieldCount; f++)
                 {
                     int parseBitIdx = 0;
-                    if (!ParseDeltaFieldDescriptions(data, size, ref parseBitIdx))
+                    if (!ParseDeltaFieldDescriptions(reader.Data, reader.Size, ref parseBitIdx))
                     {
                         _logger.LogWarning($"[DeltaDescription] failed parsing field {f}");
                         return SessionState.Connected;
                     }
                 }
 
-                offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
-                _logger.LogDebug($"[DeltaDescription] done, new offset={offset}");
+                reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+                _logger.LogDebug($"[DeltaDescription] done, new offset={reader.Offset}");
             }
             else if (dataType == (byte)ServerMessageType.NewMoveVars)
             {
                 int mvSize;
                 unsafe { mvSize = sizeof(NewMoveVarsData); }
-                if (offset + mvSize > size)
+                if (reader.Offset + mvSize > reader.Size)
                 {
-                    _logger.LogWarning($"[NewMoveVars] buffer overflow: offset={offset}, need={mvSize}, size={size}");
+                    _logger.LogWarning($"[NewMoveVars] buffer overflow: offset={reader.Offset}, need={mvSize}, size={reader.Size}");
                     return SessionState.Connected;
                 }
 
                 unsafe
                 {
-                    fixed (byte* p = &data[offset])
+                    fixed (byte* p = &reader.Data[reader.Offset])
                         _ = *(NewMoveVarsData*)p;
-                    offset += mvSize;
+                    reader.Offset += mvSize;
                 }
 
-                MessageReader.ReadString(ref data, ref offset, size);
+                reader.ReadString();
                 _logger.LogDebug($"[NewMoveVars] done, structSize={mvSize}");
             }
             else if (dataType == (byte)ServerMessageType.SetView)
             {
-                if (offset + 2 > size)
+                if (reader.Offset + 2 > reader.Size)
                 {
-                    _logger.LogWarning($"[SetView] buffer overflow: offset={offset}, size={size}");
+                    _logger.LogWarning($"[SetView] buffer overflow: offset={reader.Offset}, size={reader.Size}");
                     return SessionState.Connected;
                 }
-                offset += 2;
+                reader.Offset += 2;
             }
             else if (dataType == (byte)ServerMessageType.NewUserMsg)
             {
                 int msgSize;
                 unsafe { msgSize = sizeof(NewUserMsgData); }
-                if (offset + msgSize > size)
+                if (reader.Offset + msgSize > reader.Size)
                 {
-                    _logger.LogWarning($"[NewUserMsg] buffer overflow: offset={offset}, need={msgSize}, size={size}");
+                    _logger.LogWarning($"[NewUserMsg] buffer overflow: offset={reader.Offset}, need={msgSize}, size={reader.Size}");
                     return SessionState.Connected;
                 }
 
                 unsafe
                 {
-                    fixed (byte* p = &data[offset])
+                    fixed (byte* p = &reader.Data[reader.Offset])
                         _ = *(NewUserMsgData*)p;
-                    offset += msgSize;
+                    reader.Offset += msgSize;
                 }
                 _logger.LogDebug($"[NewUserMsg] done, structSize={msgSize}");
             }
             else if (dataType == (byte)ServerMessageType.StuffText)
             {
-                string st = MessageReader.ReadString(ref data, ref offset, size);
+                string st = reader.ReadString();
                 _logger.LogDebug($"[StuffText] text=\"{st[..Math.Min(st.Length, 200)]}\"");
             }
             else if (dataType == (byte)ServerMessageType.UpdateUserInfo)
             {
-                if (offset + 1 > size) { _logger.LogWarning("[UpdateUserInfo] buffer overflow at byte 1"); return SessionState.Connected; }
-                offset += 1;
-                if (offset + 4 > size) { _logger.LogWarning("[UpdateUserInfo] buffer overflow at byte 4"); return SessionState.Connected; }
-                offset += 4;
-                string uui = MessageReader.ReadString(ref data, ref offset, size);
+                if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[UpdateUserInfo] buffer overflow at byte 1"); return SessionState.Connected; }
+                reader.Offset += 1;
+                if (reader.Offset + 4 > reader.Size) { _logger.LogWarning("[UpdateUserInfo] buffer overflow at byte 4"); return SessionState.Connected; }
+                reader.Offset += 4;
+                string uui = reader.ReadString();
                 UserInfo = uui;
                 _logger.LogDebug($"[UpdateUserInfo] userInfo=\"{uui[..Math.Min(uui.Length, 100)]}\"");
-                if (offset + 16 > size) { _logger.LogWarning("[UpdateUserInfo] buffer overflow at 16"); return SessionState.Connected; }
-                offset += 16;
+                if (reader.Offset + 16 > reader.Size) { _logger.LogWarning("[UpdateUserInfo] buffer overflow at 16"); return SessionState.Connected; }
+                reader.Offset += 16;
             }
             else if (dataType == (byte)ServerMessageType.ResourceRequest)
             {
-                if (offset + 4 > size) { _logger.LogWarning("[ResourceRequest] buffer overflow"); return SessionState.Connected; }
-                ctx.SpawnCount = BitConverter.ToUInt32(data, offset);
-                offset += 4;
-                if (offset + 4 > size) { _logger.LogWarning("[ResourceRequest] buffer overflow after spawnCount"); return SessionState.Connected; }
-                uint resUnknown = BitConverter.ToUInt32(data, offset);
-                offset += 4;
+                if (reader.Offset + 4 > reader.Size) { _logger.LogWarning("[ResourceRequest] buffer overflow"); return SessionState.Connected; }
+                ctx.SpawnCount = reader.ReadUInt32();
+                if (reader.Offset + 4 > reader.Size) { _logger.LogWarning("[ResourceRequest] buffer overflow after spawnCount"); return SessionState.Connected; }
+                uint resUnknown = reader.ReadUInt32();
                 _logger.LogDebug($"[ResourceRequest] spawnCount={ctx.SpawnCount}, unknown={resUnknown}");
             }
             else if (dataType == (byte)ServerMessageType.ResourceLocation)
             {
-                string loc = MessageReader.ReadString(ref data, ref offset, size);
+                string loc = reader.ReadString();
                 _logger.LogDebug($"[ResourceLocation] location=\"{loc}\"");
             }
             else if (dataType == (byte)ServerMessageType.ResourceList)
             {
-                int listStart = offset;
-                ProcessResourceList(ctx, ref data, ref offset, size);
-                _logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={offset - listStart}");
+                int listStart = reader.Offset;
+                ProcessResourceList(ctx, reader);
+                _logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={reader.Offset - listStart}");
                 OnResourceList?.Invoke(this, ctx.Resources);
             }
             else if (dataType == (byte)ServerMessageType.TempEntity)
             {
-                if (offset + 1 > size) { _logger.LogWarning("[TempEntity] buffer overflow"); return SessionState.Connected; }
-                offset += 1;
+                if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[TempEntity] buffer overflow"); return SessionState.Connected; }
+                reader.Offset += 1;
                 for (int i = 0; i < 3; i++)
                 {
-                    if (offset + 2 > size) { _logger.LogWarning($"[TempEntity] buffer overflow at coord {i}"); return SessionState.Connected; }
-                    offset += 2;
+                    if (reader.Offset + 2 > reader.Size) { _logger.LogWarning($"[TempEntity] buffer overflow at coord {i}"); return SessionState.Connected; }
+                    reader.Offset += 2;
                 }
             }
             else if (dataType == (byte)ServerMessageType.SpawnStaticSound)
             {
-                offset += 14;
+                reader.Offset += 14;
             }
             else if (dataType == (byte)ServerMessageType.SendCvarValue2)
             {
-                if (offset + 4 > size) { _logger.LogWarning("[SendCvarValue2] buffer overflow"); return SessionState.Connected; }
-                uint requestId = BitConverter.ToUInt32(data, offset);
-                offset += 4;
-                string cvarName = MessageReader.ReadString(ref data, ref offset, size);
+                if (reader.Offset + 4 > reader.Size) { _logger.LogWarning("[SendCvarValue2] buffer overflow"); return SessionState.Connected; }
+                uint requestId = reader.ReadUInt32();
+                string cvarName = reader.ReadString();
                 _logger.LogDebug($"[SendCvarValue2] requestId={requestId}, cvar=\"{cvarName}\"");
             }
             else if (dataType == (byte)ServerMessageType.SpawnBaseline)
@@ -609,7 +606,7 @@ public class GoldsrcConnection : IDisposable
                 while (true)
                 {
                     uint entityNumber = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref entityNumber, 11))
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entityNumber, 11))
                     {
                         _logger.LogWarning($"[SpawnBaseline] failed reading entityNumber at count={entityCount}");
                         return SessionState.Connected;
@@ -623,7 +620,7 @@ public class GoldsrcConnection : IDisposable
                     }
 
                     uint entityType = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref entityType, 2))
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entityType, 2))
                     {
                         _logger.LogWarning($"[SpawnBaseline] failed reading entityType at entity={entityNumber}");
                         return SessionState.Connected;
@@ -640,156 +637,155 @@ public class GoldsrcConnection : IDisposable
                         dt = DeltaDefinitions.CustomEntityState;
                     }
 
-                    ParseDeltaFields(dt, data, size, ref bitIdx);
+                    ParseDeltaFields(dt, reader.Data, reader.Size, ref bitIdx);
                     entityCount++;
                 }
 
                 uint baselineCount = 0;
-                BitReader.ReadBits(data, ref bitIdx, size, ref baselineCount, 6);
+                BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref baselineCount, 6);
                 _logger.LogDebug($"[SpawnBaseline] entities={entityCount}, baselineCount={baselineCount}");
                 for (uint ei = 0; ei < baselineCount; ei++)
-                    ParseDeltaFields(DeltaDefinitions.EntityState, data, size, ref bitIdx);
+                    ParseDeltaFields(DeltaDefinitions.EntityState, reader.Data, reader.Size, ref bitIdx);
 
-                offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
-                _logger.LogDebug($"[SpawnBaseline] done, totalBits={bitIdx}, newOffset={offset}");
+                reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+                _logger.LogDebug($"[SpawnBaseline] done, totalBits={bitIdx}, newOffset={reader.Offset}");
             }
             else if (dataType == (byte)ServerMessageType.Time)
             {
-                float time = BitConverter.ToSingle(data, offset);
-                offset += 4;
+                reader.ReadSingle(out float time);
                 _logger.LogDebug($"[Time] time={time:F2}");
             }
             else if (dataType == (byte)ServerMessageType.LightStyle)
             {
-                if (offset + 1 > size) { _logger.LogWarning("[LightStyle] buffer overflow"); return SessionState.Connected; }
-                offset += 1;
-                MessageReader.ReadString(ref data, ref offset, size);
+                if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[LightStyle] buffer overflow"); return SessionState.Connected; }
+                reader.Offset += 1;
+                reader.ReadString();
             }
             else if (dataType == (byte)ServerMessageType.SetAngle)
             {
                 for (int i = 0; i < 3; i++)
                 {
-                    if (offset + 2 > size) { _logger.LogWarning($"[SetAngle] buffer overflow at angle {i}"); return SessionState.Connected; }
-                    offset += 2;
+                    if (reader.Offset + 2 > reader.Size) { _logger.LogWarning($"[SetAngle] buffer overflow at angle {i}"); return SessionState.Connected; }
+                    reader.Offset += 2;
                 }
             }
             else if (dataType == (byte)ServerMessageType.ClientData)
             {
                 int bitIdx = 0;
                 uint haveDeltaSeq = 0;
-                if (!BitReader.ReadBits(data, ref bitIdx, size, ref haveDeltaSeq, 1)) return SessionState.Connected;
+                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref haveDeltaSeq, 1)) return SessionState.Connected;
                 if (haveDeltaSeq != 0)
                 {
                     uint deltaSeq = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref deltaSeq, 8)) return SessionState.Connected;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref deltaSeq, 8)) return SessionState.Connected;
                     _logger.LogDebug($"[ClientData] deltaSeq={deltaSeq}");
                 }
-                ParseDeltaFields(DeltaDefinitions.ClientData, data, size, ref bitIdx);
+                ParseDeltaFields(DeltaDefinitions.ClientData, reader.Data, reader.Size, ref bitIdx);
 
                 int weaponCount = 0;
                 while (true)
                 {
                     uint haveDelta = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref haveDelta, 1)) return SessionState.Connected;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref haveDelta, 1)) return SessionState.Connected;
                     if (haveDelta == 0) break;
                     uint index = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref index, 6)) return SessionState.Connected;
-                    ParseDeltaFields(DeltaDefinitions.WeaponData, data, size, ref bitIdx);
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref index, 6)) return SessionState.Connected;
+                    ParseDeltaFields(DeltaDefinitions.WeaponData, reader.Data, reader.Size, ref bitIdx);
                     weaponCount++;
                 }
                 _logger.LogDebug($"[ClientData] done, weaponDeltas={weaponCount}");
-                offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+                reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
             }
             else if (dataType == (byte)ServerMessageType.SignOnNum)
             {
-                if (offset + 1 > size) { _logger.LogWarning("[SignOnNum] buffer overflow"); return SessionState.Connected; }
-                byte signOn = data[offset++];
+                if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[SignOnNum] buffer overflow"); return SessionState.Connected; }
+                byte signOn = reader.Data[reader.Offset++];
                 _logger.LogDebug($"[SignOnNum] value={signOn}");
             }
             else if (dataType == (byte)ServerMessageType.VoiceInit)
             {
-                string codec = MessageReader.ReadString(ref data, ref offset, size);
-                if (offset + 1 > size) { _logger.LogWarning("[VoiceInit] buffer overflow"); return SessionState.Connected; }
-                byte quality = data[offset++];
+                string codec = reader.ReadString();
+                if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[VoiceInit] buffer overflow"); return SessionState.Connected; }
+                byte quality = reader.Data[reader.Offset++];
                 _logger.LogDebug($"[VoiceInit] codec=\"{codec}\", quality={quality}");
             }
             else if (dataType == (byte)ServerMessageType.Sound)
             {
                 int bitIdx = 0;
                 uint fieldMask = 0;
-                if (!BitReader.ReadBits(data, ref bitIdx, size, ref fieldMask, 9)) return SessionState.Connected;
+                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref fieldMask, 9)) return SessionState.Connected;
 
                 if ((fieldMask & SoundFlags.Volume) != 0)
                 {
                     uint vol = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref vol, 8)) return SessionState.Connected;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref vol, 8)) return SessionState.Connected;
                 }
                 if ((fieldMask & SoundFlags.Attenuation) != 0)
                 {
                     uint attn = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref attn, 8)) return SessionState.Connected;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref attn, 8)) return SessionState.Connected;
                 }
 
                 uint channel = 0;
-                if (!BitReader.ReadBits(data, ref bitIdx, size, ref channel, 3)) return SessionState.Connected;
+                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref channel, 3)) return SessionState.Connected;
                 uint entity = 0;
-                if (!BitReader.ReadBits(data, ref bitIdx, size, ref entity, 11)) return SessionState.Connected;
+                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entity, 11)) return SessionState.Connected;
                 uint soundNum = 0;
                 int snBits = (fieldMask & SoundFlags.LargeIndex) != 0 ? 16 : 8;
-                if (!BitReader.ReadBits(data, ref bitIdx, size, ref soundNum, snBits)) return SessionState.Connected;
+                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref soundNum, snBits)) return SessionState.Connected;
 
                 float ox = 0, oy = 0, oz = 0;
                 uint xf = 0, yf = 0, zf = 0;
-                BitReader.ReadBits(data, ref bitIdx, size, ref xf, 1);
-                BitReader.ReadBits(data, ref bitIdx, size, ref yf, 1);
-                BitReader.ReadBits(data, ref bitIdx, size, ref zf, 1);
-                if (xf != 0) BitReader.ReadBitCoord(data, ref bitIdx, size, ref ox);
-                if (yf != 0) BitReader.ReadBitCoord(data, ref bitIdx, size, ref oy);
-                if (zf != 0) BitReader.ReadBitCoord(data, ref bitIdx, size, ref oz);
+                BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref xf, 1);
+                BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref yf, 1);
+                BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref zf, 1);
+                if (xf != 0) BitReader.ReadBitCoord(reader.Data, ref bitIdx, reader.Size, ref ox);
+                if (yf != 0) BitReader.ReadBitCoord(reader.Data, ref bitIdx, reader.Size, ref oy);
+                if (zf != 0) BitReader.ReadBitCoord(reader.Data, ref bitIdx, reader.Size, ref oz);
 
                 if ((fieldMask & SoundFlags.Pitch) != 0)
                 {
                     uint pitch = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref pitch, 8)) return SessionState.Connected;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref pitch, 8)) return SessionState.Connected;
                 }
                 _logger.LogDebug($"[Sound] channel={channel}, entity={entity}, soundNum={soundNum}, fieldMask=0x{fieldMask:X4}");
-                offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+                reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
             }
             else if (dataType == (byte)ServerMessageType.Customization)
             {
-                if (offset + 1 > size) { _logger.LogWarning("[Customization] buffer overflow at 1"); return SessionState.Connected; }
-                offset += 1;
-                if (offset + 1 > size) { _logger.LogWarning("[Customization] buffer overflow at 2"); return SessionState.Connected; }
-                offset += 1;
-                MessageReader.ReadString(ref data, ref offset, size);
-                if (offset + 2 > size) { _logger.LogWarning("[Customization] buffer overflow at 3"); return SessionState.Connected; }
-                offset += 2;
-                if (offset + 4 > size) { _logger.LogWarning("[Customization] buffer overflow at 4"); return SessionState.Connected; }
-                offset += 4;
-                if (offset + 1 > size) { _logger.LogWarning("[Customization] buffer overflow at 5"); return SessionState.Connected; }
-                offset += 1;
+                if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 1"); return SessionState.Connected; }
+                reader.Offset += 1;
+                if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 2"); return SessionState.Connected; }
+                reader.Offset += 1;
+                reader.ReadString();
+                if (reader.Offset + 2 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 3"); return SessionState.Connected; }
+                reader.Offset += 2;
+                if (reader.Offset + 4 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 4"); return SessionState.Connected; }
+                reader.Offset += 4;
+                if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 5"); return SessionState.Connected; }
+                reader.Offset += 1;
             }
             else if (dataType == (byte)ServerMessageType.Choke) { }
-            else if (dataType == 'B' && offset + 2 < size && data[offset] == 'Z' && data[offset + 1] == '2' && data[offset + 2] == 0)
+            else if (dataType == 'B' && reader.Offset + 2 < reader.Size && reader.Data[reader.Offset] == 'Z' && reader.Data[reader.Offset + 1] == '2' && reader.Data[reader.Offset + 2] == 0)
             {
                 _logger.LogWarning("[BZ2] compressed data detected, skipping");
                 _logger.LogWarning("BZ2 compressed data received (decompression not yet supported)");
-                offset = size;
+                reader.Offset = reader.Size;
             }
-            else if (ScanForBz2(data, offset, size))
+            else if (ScanForBz2(reader.Data, reader.Offset, reader.Size))
             {
                 _logger.LogWarning("[BZ2] compressed data detected at offset, skipping");
-                offset = size;
+                reader.Offset = reader.Size;
             }
             else
             {
-                offset--;
-                _logger.LogWarning($"[Connected] Unknown data type: 0x{dataType:X2} at offset={offset}, remaining={size - offset}");
+                reader.Offset--;
+                _logger.LogWarning($"[Connected] Unknown data type: 0x{dataType:X2} at offset={reader.Offset}, remaining={reader.Remaining}");
                 return SessionState.Connected;
             }
         }
 
-        _logger.LogDebug($"[Connected] processed all {size} bytes successfully");
+        _logger.LogDebug($"[Connected] processed all {reader.Size} bytes successfully");
         return SessionState.Connected;
     }
 
@@ -885,11 +881,11 @@ public class GoldsrcConnection : IDisposable
         return true;
     }
 
-    private static void ProcessResourceList(ConnectionContext ctx, ref byte[] data, ref int offset, int size)
+    private static void ProcessResourceList(ConnectionContext ctx, MessageReader reader)
     {
         int bitIdx = 0;
         uint resourceCount = 0;
-        if (!BitReader.ReadBits(data, ref bitIdx, size, ref resourceCount, 12)) return;
+        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref resourceCount, 12)) return;
 
         ctx.Resources = new ResourceInfo[resourceCount];
         for (uint i = 0; i < resourceCount; i++)
@@ -898,17 +894,17 @@ public class GoldsrcConnection : IDisposable
             ctx.Resources[i] = r;
 
             uint type = 0;
-            if (!BitReader.ReadBits(data, ref bitIdx, size, ref type, 4)) return;
+            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref type, 4)) return;
 
-            if (!BitReader.ReadBitString(data, ref bitIdx, size, out r.Name)) return;
+            if (!BitReader.ReadBitString(reader.Data, ref bitIdx, reader.Size, out r.Name)) return;
             if (r.Name.Length > 64) return;
 
             uint resIdx = 0;
-            if (!BitReader.ReadBits(data, ref bitIdx, size, ref resIdx, 12)) return;
+            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref resIdx, 12)) return;
             uint dlSize = 0;
-            if (!BitReader.ReadBits(data, ref bitIdx, size, ref dlSize, 24)) return;
+            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref dlSize, 24)) return;
             uint flag = 0;
-            if (!BitReader.ReadBits(data, ref bitIdx, size, ref flag, 3)) return;
+            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref flag, 3)) return;
             r.Flag = (byte)flag;
 
             if ((r.Flag & (byte)ResourceFlag.Custom) != 0)
@@ -917,21 +913,21 @@ public class GoldsrcConnection : IDisposable
                 for (int b = 0; b < 16; b++)
                 {
                     uint bb = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref bb, 8)) return;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref bb, 8)) return;
                     md5[b] = (byte)bb;
                 }
                 r.Md5 = md5;
             }
 
             uint hasReserved = 0;
-            if (!BitReader.ReadBits(data, ref bitIdx, size, ref hasReserved, 1)) return;
+            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasReserved, 1)) return;
             if (hasReserved != 0)
             {
                 byte[] reserved = new byte[32];
                 for (int b = 0; b < 32; b++)
                 {
                     uint bb = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref bb, 8)) return;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref bb, 8)) return;
                     reserved[b] = (byte)bb;
                 }
                 r.Reserved = reserved;
@@ -941,7 +937,7 @@ public class GoldsrcConnection : IDisposable
         }
 
         uint hasConsistency = 0;
-        if (!BitReader.ReadBits(data, ref bitIdx, size, ref hasConsistency, 1)) return;
+        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasConsistency, 1)) return;
 
         if (hasConsistency != 0)
         {
@@ -949,23 +945,23 @@ public class GoldsrcConnection : IDisposable
             while (true)
             {
                 uint haveFile = 0;
-                if (!BitReader.ReadBits(data, ref bitIdx, size, ref haveFile, 1)) return;
+                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref haveFile, 1)) return;
                 if (haveFile == 0) break;
 
                 uint indexOrDiff = 0;
-                if (!BitReader.ReadBits(data, ref bitIdx, size, ref indexOrDiff, 1)) return;
+                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref indexOrDiff, 1)) return;
 
                 if (indexOrDiff == 0)
                 {
                     lastIndex = 0;
                     uint idx = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref idx, 10)) return;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref idx, 10)) return;
                     lastIndex = (int)idx;
                 }
                 else
                 {
                     uint diff = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref diff, 5)) return;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref diff, 5)) return;
                     lastIndex += (int)diff;
                 }
 
@@ -974,7 +970,7 @@ public class GoldsrcConnection : IDisposable
             }
         }
 
-        offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+        reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
     }
 
     private static bool ScanForBz2(byte[] data, int offset, int size)

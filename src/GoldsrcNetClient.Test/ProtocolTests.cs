@@ -476,80 +476,82 @@ public class MessageReaderTests
     public void ReadString_ReturnsString()
     {
         byte[] data = [(byte)'t', (byte)'e', (byte)'s', (byte)'t', 0x00, 0xFF];
-        int offset = 0;
+        var reader = new MessageReader(data);
 
-        string result = MessageReader.ReadString(ref data, ref offset, data.Length);
+        string result = reader.ReadString();
         Assert.Equal("test", result);
-        Assert.Equal(5, offset);
+        Assert.Equal(5, reader.Offset);
     }
 
     [Fact]
     public void ReadString_NoNullTerminator()
     {
         byte[] data = [(byte)'a', (byte)'b', (byte)'c'];
-        int offset = 0;
+        var reader = new MessageReader(data);
 
-        string result = MessageReader.ReadString(ref data, ref offset, data.Length);
+        string result = reader.ReadString();
         Assert.Equal("abc", result);
-        Assert.Equal(3, offset);
+        Assert.Equal(3, reader.Offset);
     }
 
     [Fact]
     public void ReadString_EmptyAtNull()
     {
         byte[] data = [0x00, 0xFF];
-        int offset = 0;
+        var reader = new MessageReader(data);
 
-        string result = MessageReader.ReadString(ref data, ref offset, data.Length);
+        string result = reader.ReadString();
         Assert.Equal("", result);
-        Assert.Equal(1, offset);
+        Assert.Equal(1, reader.Offset);
     }
 
     [Fact]
     public void ReadString_Bytes_ReturnsBytes()
     {
         byte[] data = [(byte)'A', (byte)'B', 0x00, 0xFF];
-        int offset = 0;
+        var reader = new MessageReader(data);
 
-        bool ok = MessageReader.ReadString(ref data, ref offset, data.Length, out byte[] str);
+        bool ok = reader.ReadString(out byte[] str);
         Assert.True(ok);
         Assert.Equal([(byte)'A', (byte)'B'], str);
-        Assert.Equal(3, offset);
+        Assert.Equal(3, reader.Offset);
     }
 
     [Fact]
     public void ReadString_Bytes_NoNull_ReturnsFalse()
     {
         byte[] data = [(byte)'X', (byte)'Y', (byte)'Z'];
-        int offset = 0;
+        var reader = new MessageReader(data);
 
-        bool ok = MessageReader.ReadString(ref data, ref offset, data.Length, out byte[] str);
+        bool ok = reader.ReadString(out byte[] str);
         Assert.False(ok);
-        Assert.Equal(3, offset);
+        Assert.Equal(3, reader.Offset);
     }
 
     [Fact]
     public void ReadBytes_Success()
     {
         byte[] data = [0x01, 0x02, 0x03, 0x04, 0x05];
-        int offset = 1;
+        var reader = new MessageReader(data);
+        reader.Offset = 1;
         Span<byte> dest = new byte[3];
 
-        bool ok = MessageReader.ReadBytes(ref data, ref offset, data.Length, dest);
+        bool ok = reader.ReadBytes(dest);
         Assert.True(ok);
         Assert.Equal(0x02, dest[0]);
         Assert.Equal(0x04, dest[2]);
-        Assert.Equal(4, offset);
+        Assert.Equal(4, reader.Offset);
     }
 
     [Fact]
     public void ReadBytes_Overflow_ReturnsFalse()
     {
         byte[] data = [0x01, 0x02];
-        int offset = 1;
+        var reader = new MessageReader(data);
+        reader.Offset = 1;
         Span<byte> dest = new byte[3];
 
-        bool ok = MessageReader.ReadBytes(ref data, ref offset, data.Length, dest);
+        bool ok = reader.ReadBytes(dest);
         Assert.False(ok);
     }
 
@@ -557,20 +559,20 @@ public class MessageReaderTests
     public void ReadUInt16_Valid()
     {
         byte[] data = [0xCD, 0xAB, 0xFF];
-        int offset = 0;
+        var reader = new MessageReader(data);
 
-        ushort val = MessageReader.ReadUInt16(ref data, ref offset, data.Length);
+        ushort val = reader.ReadUInt16();
         Assert.Equal(0xABCDu, val);
-        Assert.Equal(2, offset);
+        Assert.Equal(2, reader.Offset);
     }
 
     [Fact]
     public void ReadUInt16_Overflow_ReturnsZero()
     {
         byte[] data = [0x01];
-        int offset = 0;
+        var reader = new MessageReader(data);
 
-        ushort val = MessageReader.ReadUInt16(ref data, ref offset, data.Length);
+        ushort val = reader.ReadUInt16();
         Assert.Equal(0u, val);
     }
 
@@ -578,20 +580,20 @@ public class MessageReaderTests
     public void ReadUInt32_Valid()
     {
         byte[] data = [0x78, 0x56, 0x34, 0x12, 0xFF];
-        int offset = 0;
+        var reader = new MessageReader(data);
 
-        uint val = MessageReader.ReadUInt32(ref data, ref offset, data.Length);
+        uint val = reader.ReadUInt32();
         Assert.Equal(0x12345678u, val);
-        Assert.Equal(4, offset);
+        Assert.Equal(4, reader.Offset);
     }
 
     [Fact]
     public void ReadUInt32_Overflow_ReturnsZero()
     {
         byte[] data = [0x01, 0x02];
-        int offset = 0;
+        var reader = new MessageReader(data);
 
-        uint val = MessageReader.ReadUInt32(ref data, ref offset, data.Length);
+        uint val = reader.ReadUInt32();
         Assert.Equal(0u, val);
     }
 }
@@ -991,8 +993,8 @@ public class Utf8EncodingTests
     public void MessageReader_ReadString_HandlesAscii()
     {
         byte[] data = [(byte)'h', (byte)'e', (byte)'l', (byte)'l', (byte)'o', 0];
-        int offset = 0;
-        var result = MessageReader.ReadString(ref data, ref offset, data.Length);
+        var reader = new MessageReader(data);
+        var result = reader.ReadString();
         Assert.Equal("hello", result);
     }
 
@@ -1003,8 +1005,8 @@ public class Utf8EncodingTests
         byte[] data = new byte[utf8Bytes.Length + 1];
         utf8Bytes.CopyTo(data, 0);
         data[^1] = 0;
-        int offset = 0;
-        var result = MessageReader.ReadString(ref data, ref offset, data.Length);
+        var reader = new MessageReader(data);
+        var result = reader.ReadString();
         Assert.Equal("café", result);
     }
 
@@ -1015,8 +1017,8 @@ public class Utf8EncodingTests
         byte[] data = new byte[utf8Bytes.Length + 1];
         utf8Bytes.CopyTo(data, 0);
         data[^1] = 0;
-        int offset = 0;
-        var result = MessageReader.ReadString(ref data, ref offset, data.Length);
+        var reader = new MessageReader(data);
+        var result = reader.ReadString();
         Assert.Equal("玩家", result);
     }
 
@@ -1048,8 +1050,8 @@ public class Utf8EncodingTests
     public void MessageReader_ReadString_ReturnsRawBytes()
     {
         byte[] data = [(byte)'A', (byte)'B', 0, (byte)'C'];
-        int offset = 0;
-        var result = MessageReader.ReadString(ref data, ref offset, data.Length, out byte[] raw);
+        var reader = new MessageReader(data);
+        var result = reader.ReadString(out byte[] raw);
         Assert.True(result);
         Assert.Equal(new byte[] { (byte)'A', (byte)'B' }, raw);
     }
