@@ -55,7 +55,8 @@ public partial class ConnectCommand : ICommand
             }
             else
             {
-                console.Error.WriteLine("Steam init failed. Falling back to basic auth.");
+                console.Error.WriteLine($"Steam init failed: {steamAuth.LastError ?? "unknown error"}");
+                console.Error.WriteLine("Falling back to basic auth.");
                 steamAuth.Dispose();
                 authDisposable = null;
             }

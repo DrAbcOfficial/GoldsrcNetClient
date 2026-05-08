@@ -8,17 +8,33 @@ public sealed class FacepunchSteamAuthProvider : ISteamAuthProvider, IDisposable
     private AuthTicket? _ticket;
 
     public bool IsAvailable => _ticket?.Data is { Length: > 0 };
+    public string? LastError { get; private set; }
 
     public FacepunchSteamAuthProvider(uint appId = 70)
     {
         try
         {
             SteamClient.Init(appId);
-            _ticket = SteamUser.GetAuthSessionTicket();
+            if (!SteamClient.IsValid)
+            {
+                LastError = $"SteamClient.Init({appId}) succeeded but SteamClient.IsValid is false. Ensure Steam client is running and you own AppID {appId}.";
+                return;
+            }
+
+            _ticket = SteamUser.GetAuthSessionTicketAsync().GetAwaiter().GetResult();
+            if (_ticket?.Data is not { Length: > 0 })
+            {
+                LastError = "SteamUser.GetAuthSessionTicketAsync() returned null or empty ticket.";
+                _ticket = null;
+            }
         }
-        catch (Exception)
+        catch (DllNotFoundException ex)
         {
-            _ticket = null;
+            LastError = $"Native Steam library not found: {ex.Message}. Ensure steam_api64.dll is present in the output directory.";
+        }
+        catch (Exception ex)
+        {
+            LastError = $"Steam init exception: {ex.GetType().Name}: {ex.Message}";
         }
     }
 
@@ -30,6 +46,14 @@ public sealed class FacepunchSteamAuthProvider : ISteamAuthProvider, IDisposable
             return Convert.ToHexString(data).ToLowerInvariant();
 
         return "steam";
+    }
+
+    public byte[] GetRawAuthBytes()
+    {
+        if (_ticket?.Data is { Length: > 0 })
+            return _ticket!.Data;
+
+        return System.Text.Encoding.ASCII.GetBytes("steam");
     }
 
     public void Dispose()

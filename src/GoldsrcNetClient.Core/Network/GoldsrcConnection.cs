@@ -191,37 +191,74 @@ public class GoldsrcConnection : IDisposable
     {
         var ctx = _contexts[ep];
         var challengeStr = Encoding.ASCII.GetString(ctx.Challenge);
-        var connectPrefix = $"connect {ProtocolVersion} {challengeStr} ";
-
         var authProto = ctx.AuthProtocol;
-        var rawAuth = _authProvider.GetRawAuthData();
-        if (rawAuth == "steam" && !_authProvider.IsAvailable)
+
+        var rawAuthBytes = _authProvider.GetRawAuthBytes();
+        string rawAuthStr;
+        if (!_authProvider.IsAvailable)
         {
             if (authProto == 2)
             {
-                rawAuth = "00000000000000000000000000000000";
+                rawAuthStr = "00000000000000000000000000000000";
+                rawAuthBytes = Encoding.ASCII.GetBytes(rawAuthStr);
                 OnDebug?.Invoke($"[Connect] generated fake hashed CD key (32 zero hex chars) for authProto=2");
             }
             else if (authProto == 1)
             {
-                rawAuth = "0000000000000";
+                rawAuthStr = "0000000000000";
+                rawAuthBytes = Encoding.ASCII.GetBytes(rawAuthStr);
                 OnDebug?.Invoke($"[Connect] generated fake WON CD key for authProto=1");
             }
         }
-        var protoInfo = $"\\prot\\{authProto}\\unique\\-1\\raw\\{rawAuth}";
+
+        rawAuthStr = authProto == 3 && _authProvider.IsAvailable
+            ? $"[binary {rawAuthBytes.Length} bytes]"
+            : Encoding.ASCII.GetString(rawAuthBytes);
+
+        var protoInfoPlaintext = $"\\prot\\{authProto}\\unique\\-1\\raw\\{rawAuthStr}";
         var userInfo = "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000";
+        OnDebug?.Invoke($"[Connect] packet: proto={ProtocolVersion}, challenge={challengeStr}, authProto={authProto}, rawAuth=[{rawAuthStr.Length}]");
 
-        var full = $"{connectPrefix}\"{protoInfo}\" \"{userInfo}\"\n";
-        OnDebug?.Invoke($"[Connect] packet: proto={ProtocolVersion}, challenge={challengeStr}, authProto={authProto}, rawAuth=[{rawAuth.Length} bytes], protoInfo={protoInfo}");
+        var result = BuildRawConnectPacket(connectPrefix: $"connect {ProtocolVersion} {challengeStr} ",
+                                           protoPrefix: $"\\prot\\{authProto}\\unique\\-1\\raw\\",
+                                           protoValue: rawAuthBytes,
+                                           userInfo: userInfo);
 
-        var result = new byte[4 + full.Length];
-        result[0] = 0xFF;
-        result[1] = 0xFF;
-        result[2] = 0xFF;
-        result[3] = 0xFF;
-        Encoding.ASCII.GetBytes(full, 0, full.Length, result, 4);
         OnDebug?.Invoke($"[Connect] raw hex: {Convert.ToHexString(result.AsSpan(0, Math.Min(result.Length, 64)))}");
         return result;
+    }
+
+    private static byte[] BuildRawConnectPacket(string connectPrefix, string protoPrefix, byte[] protoValue, string userInfo)
+    {
+        using var ms = new MemoryStream();
+
+        ms.Write([0xFF, 0xFF, 0xFF, 0xFF]);
+
+        ms.Write(Encoding.ASCII.GetBytes(connectPrefix));
+        ms.WriteByte((byte)'\"');
+        ms.Write(Encoding.ASCII.GetBytes(protoPrefix));
+
+        for (int i = 0; i < protoValue.Length; i++)
+        {
+            byte b = protoValue[i];
+            if (b == '\\')
+            {
+                ms.WriteByte((byte)'\\');
+                ms.WriteByte((byte)'\\');
+            }
+            else if (b == '\"')
+            {
+                ms.WriteByte((byte)'\\');
+                ms.WriteByte((byte)'\"');
+            }
+            else
+            {
+                ms.WriteByte(b);
+            }
+        }
+
+        ms.Write(Encoding.ASCII.GetBytes($"\" \"{userInfo}\"\n"));
+        return ms.ToArray();
     }
 
     private SessionState ProcessConnected(IPEndPoint ep, ref uint srcSequence, ref uint dstSequence,
