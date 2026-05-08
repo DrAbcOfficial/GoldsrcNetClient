@@ -107,4 +107,55 @@ public static class BitWriter
     {
         WriteBits(source, 0, bitCount, destination, ref destBitIndex, destSize);
     }
+
+    /// <summary>Writes a GoldSrc compressed angle (in degrees) into the bitstream.</summary>
+    /// <param name="angle">Angle in degrees. Clamped to [0, 360) before encoding.</param>
+    /// <param name="numBits">Number of bits to use (e.g. 8, 16).</param>
+    /// <param name="destination">Destination byte array.</param>
+    /// <param name="destBitIndex">Current write bit position. Advanced after writing.</param>
+    /// <param name="destSize">Total destination size in bytes.</param>
+    public static void WriteBitAngle(float angle, int numBits,
+        byte[] destination, ref int destBitIndex, int destSize)
+    {
+        uint shift = (uint)(1 << numBits);
+        uint mask = shift - 1;
+
+        angle = angle % 360.0f;
+        if (angle < 0) angle += 360.0f;
+
+        int d = (int)(angle * shift / 360.0f);
+        d &= (int)mask;
+
+        WriteBits((uint)d, numBits, destination, ref destBitIndex, destSize);
+    }
+
+    /// <summary>Writes a GoldSrc bit-coordinate (fixed-point position with sign) into the bitstream.</summary>
+    /// <param name="value">Coordinate value.</param>
+    /// <param name="destination">Destination byte array.</param>
+    /// <param name="destBitIndex">Current write bit position. Advanced after writing.</param>
+    /// <param name="destSize">Total destination size in bytes.</param>
+    public static void WriteBitCoord(float value,
+        byte[] destination, ref int destBitIndex, int destSize)
+    {
+        if (value == 0.0f)
+        {
+            WriteBits(0u, 1, destination, ref destBitIndex, destSize);
+            WriteBits(0u, 1, destination, ref destBitIndex, destSize);
+            return;
+        }
+
+        WriteBits(1u, 1, destination, ref destBitIndex, destSize);
+        WriteBits(1u, 1, destination, ref destBitIndex, destSize);
+
+        uint signbit = value < 0 ? 1u : 0u;
+        if (signbit != 0) value = -value;
+        WriteBits(signbit, 1, destination, ref destBitIndex, destSize);
+
+        int intval = (int)value;
+        float fractval = value - intval;
+        int fractbits = (int)(fractval * 8.0f + 0.5f);
+
+        WriteBits((uint)intval, 12, destination, ref destBitIndex, destSize);
+        WriteBits((uint)fractbits, 3, destination, ref destBitIndex, destSize);
+    }
 }

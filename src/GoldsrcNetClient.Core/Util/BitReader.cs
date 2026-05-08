@@ -180,4 +180,27 @@ public static class BitReader
 
         return true;
     }
+
+    /// <summary>Reads a GoldSrc compressed angle from the bitstream.</summary>
+    /// <param name="source">Source byte array.</param>
+    /// <param name="sourceBitIndex">Current bit position. Advanced after reading.</param>
+    /// <param name="sourceSize">Total source size in bytes.</param>
+    /// <param name="angle">Output angle in degrees, wrapped to [-180, 180].</param>
+    /// <param name="numBits">Number of bits used to encode the angle (e.g. 8, 16).</param>
+    /// <returns>True on success; false on underflow.</returns>
+    public static bool ReadBitAngle(byte[] source, ref int sourceBitIndex, int sourceSize,
+        ref float angle, int numBits)
+    {
+        uint raw = 0;
+        if (!ReadBits(source, ref sourceBitIndex, sourceSize, ref raw, numBits))
+            return false;
+
+        float shift = (float)(1 << numBits);
+        angle = raw * (360.0f / shift);
+
+        if (angle < -180.0f) angle += 360.0f;
+        else if (angle > 180.0f) angle -= 360.0f;
+
+        return true;
+    }
 }
