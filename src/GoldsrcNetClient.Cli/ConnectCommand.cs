@@ -30,6 +30,9 @@ public partial class ConnectCommand : ICommand
     [CommandOption("timeout", 't', Description = "Connection timeout in seconds. Default: 5.")]
     public int TimeoutSeconds { get; set; } = 5;
 
+    [CommandOption("userinfo", 'u', Description = "UserInfo key-value pairs: key1=val1&key2=val2... (e.g. name=Player&rate=25000).")]
+    public string? UserInfoRaw { get; set; }
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -71,6 +74,26 @@ public partial class ConnectCommand : ICommand
 
         var logger = new ConsoleLogger(console, Debug);
         using var client = new GoldsrcConnection(logger, authProvider);
+
+        if (!string.IsNullOrEmpty(UserInfoRaw))
+        {
+            foreach (var pair in UserInfoRaw.Split('&'))
+            {
+                var eq = pair.IndexOf('=');
+                if (eq <= 0 || eq >= pair.Length - 1)
+                {
+                    if (Debug)
+                        console.Error.WriteLine($"[DEBUG] Skipping invalid userinfo pair: \"{pair}\"");
+                    continue;
+                }
+                var key = pair[..eq];
+                var value = pair[(eq + 1)..];
+                client.SetUserInfo(key, value);
+                if (Debug)
+                    console.Error.WriteLine($"[DEBUG] Set userinfo: \\{key}\\{value}");
+            }
+        }
+
         client.OnServerInfo += (conn, info) => Emit("serverinfo", info, console);
         client.OnResourceList += (conn, resources) => Emit("resourcelist", new { count = resources.Length, resources }, console);
         client.OnDataPacket += (conn, raw) =>
