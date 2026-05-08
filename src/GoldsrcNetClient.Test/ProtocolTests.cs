@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text;
 using GoldsrcNetClient.Core.Munge;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Util;
@@ -896,5 +897,160 @@ public class EnumsTests
     public void SoundFlags_MaxSpawningBit()
     {
         Assert.Equal(1u << 8, (uint)SoundFlags.Spawning);
+    }
+}
+
+public class UserInfoTests
+{
+    [Fact]
+    public void DefaultUserInfo_HasExpectedKeys()
+    {
+        using var conn = new GoldsrcConnection();
+        Assert.Equal("GoldsrcNetClient", conn.GetUserInfo("name"));
+        Assert.Equal("48", conn.GetUserInfo("protocol"));
+        Assert.Equal("20000", conn.GetUserInfo("rate"));
+        Assert.Null(conn.GetUserInfo("nonexistent"));
+    }
+
+    [Fact]
+    public void SetUserInfo_UpdatesExistingKey()
+    {
+        using var conn = new GoldsrcConnection();
+        conn.SetUserInfo("name", "TestPlayer");
+        Assert.Equal("TestPlayer", conn.GetUserInfo("name"));
+    }
+
+    [Fact]
+    public void SetUserInfo_AddsNewKey()
+    {
+        using var conn = new GoldsrcConnection();
+        conn.SetUserInfo("topcolor", "255");
+        Assert.Equal("255", conn.GetUserInfo("topcolor"));
+    }
+
+    [Fact]
+    public void SetUserInfo_CaseInsensitive()
+    {
+        using var conn = new GoldsrcConnection();
+        conn.SetUserInfo("NAME", "CapitalName");
+        Assert.Equal("CapitalName", conn.GetUserInfo("name"));
+        Assert.Equal("CapitalName", conn.GetUserInfo("NAME"));
+    }
+
+    [Fact]
+    public void GetUserInfo_ReturnsNullForMissingKey()
+    {
+        using var conn = new GoldsrcConnection();
+        Assert.Null(conn.GetUserInfo("missing_key"));
+    }
+
+    [Fact]
+    public void SetUserInfo_PreservesOtherKeys()
+    {
+        using var conn = new GoldsrcConnection();
+        conn.SetUserInfo("name", "Changed");
+        Assert.Equal("Changed", conn.GetUserInfo("name"));
+        Assert.Equal("48", conn.GetUserInfo("protocol"));
+        Assert.Equal("1", conn.GetUserInfo("cl_lc"));
+    }
+
+    [Fact]
+    public void SetUserInfo_RebuildsValidUserInfoFormat()
+    {
+        using var conn = new GoldsrcConnection();
+        conn.SetUserInfo("name", "Player");
+        var info = conn.UserInfo;
+        Assert.StartsWith("\\", info);
+        var parts = info.Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        Assert.True(parts.Length % 2 == 0, "UserInfo should have even number of parts (key+value pairs)");
+    }
+
+    [Fact]
+    public void UserInfo_CanBeReplacedDirectly()
+    {
+        using var conn = new GoldsrcConnection();
+        conn.UserInfo = "\\name\\DirectSet\\protocol\\48";
+        Assert.Equal("DirectSet", conn.GetUserInfo("name"));
+        Assert.Equal("48", conn.GetUserInfo("protocol"));
+    }
+
+    [Fact]
+    public void SetUserInfo_MultipleKeys_BuildsCorrectly()
+    {
+        using var conn = new GoldsrcConnection();
+        conn.SetUserInfo("k1", "v1");
+        conn.SetUserInfo("k2", "v2");
+        Assert.Equal("v1", conn.GetUserInfo("k1"));
+        Assert.Equal("v2", conn.GetUserInfo("k2"));
+    }
+}
+
+public class Utf8EncodingTests
+{
+    [Fact]
+    public void MessageReader_ReadString_HandlesAscii()
+    {
+        byte[] data = [(byte)'h', (byte)'e', (byte)'l', (byte)'l', (byte)'o', 0];
+        int offset = 0;
+        var result = MessageReader.ReadString(ref data, ref offset, data.Length);
+        Assert.Equal("hello", result);
+    }
+
+    [Fact]
+    public void MessageReader_ReadString_HandlesMultiByteUtf8()
+    {
+        var utf8Bytes = Encoding.UTF8.GetBytes("café");
+        byte[] data = new byte[utf8Bytes.Length + 1];
+        utf8Bytes.CopyTo(data, 0);
+        data[^1] = 0;
+        int offset = 0;
+        var result = MessageReader.ReadString(ref data, ref offset, data.Length);
+        Assert.Equal("café", result);
+    }
+
+    [Fact]
+    public void MessageReader_ReadString_HandlesCjkCharacters()
+    {
+        var utf8Bytes = Encoding.UTF8.GetBytes("玩家");
+        byte[] data = new byte[utf8Bytes.Length + 1];
+        utf8Bytes.CopyTo(data, 0);
+        data[^1] = 0;
+        int offset = 0;
+        var result = MessageReader.ReadString(ref data, ref offset, data.Length);
+        Assert.Equal("玩家", result);
+    }
+
+    [Fact]
+    public void MessageWriter_WriteStringCmd_ProducesUtf8Bytes()
+    {
+        var output = new List<byte>();
+        MessageWriter.WriteStringCmd(output, ClientCommandType.StringCmd, "café");
+        Assert.Equal((byte)ClientCommandType.StringCmd, output[0]);
+        var terminatorIndex = output.IndexOf((byte)0, 1);
+        var payload = output.GetRange(1, terminatorIndex - 1).ToArray();
+        var decoded = Encoding.UTF8.GetString(payload);
+        Assert.Equal("café", decoded);
+    }
+
+    [Fact]
+    public void MessageWriter_WriteStringCmd_RoundtripCjk()
+    {
+        var output = new List<byte>();
+        MessageWriter.WriteStringCmd(output, ClientCommandType.StringCmd, "玩家");
+        Assert.Equal((byte)ClientCommandType.StringCmd, output[0]);
+        var terminatorIndex = output.IndexOf((byte)0, 1);
+        var payload = output.GetRange(1, terminatorIndex - 1).ToArray();
+        var decoded = Encoding.UTF8.GetString(payload);
+        Assert.Equal("玩家", decoded);
+    }
+
+    [Fact]
+    public void MessageReader_ReadString_ReturnsRawBytes()
+    {
+        byte[] data = [(byte)'A', (byte)'B', 0, (byte)'C'];
+        int offset = 0;
+        var result = MessageReader.ReadString(ref data, ref offset, data.Length, out byte[] raw);
+        Assert.True(result);
+        Assert.Equal(new byte[] { (byte)'A', (byte)'B' }, raw);
     }
 }
