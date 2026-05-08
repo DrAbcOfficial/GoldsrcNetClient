@@ -6,7 +6,7 @@
 
   <ItemGroup>
     <PackageReference Include="CliFx" Version="3.0.0" />
-    <PackageReference Include="Steamworks.NET" Version="2024.8.0" />
+    <PackageReference Include="Steamworks.NET.AnyCPU" Version="2025.162.7" />
   </ItemGroup>
 
   <PropertyGroup>
