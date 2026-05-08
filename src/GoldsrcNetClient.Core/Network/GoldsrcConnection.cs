@@ -46,6 +46,7 @@ public class GoldsrcConnection : IDisposable
     private readonly IServerMessageHandler _messageHandler;
     private readonly ILogger<GoldsrcConnection> _logger;
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private IPEndPoint? _activeEndpoint;
 
     /// <summary>Delegate for <see cref="OnServerInfo"/> events.</summary>
     /// <param name="conn">The connection that received the server info.</param>
@@ -144,6 +145,37 @@ public class GoldsrcConnection : IDisposable
     }
 
     /// <summary>
+    /// Sends a string command to the connected server.
+    /// </summary>
+    /// <param name="cmd">The client command type.</param>
+    /// <param name="payload">Null-terminated string payload.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task SendStringCmdAsync(ClientCommandType cmd, string payload, CancellationToken ct = default)
+    {
+        if (_activeEndpoint == null)
+            throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
+        var cmdBytes = new List<byte> { (byte)cmd };
+        cmdBytes.AddRange(Encoding.UTF8.GetBytes(payload));
+        cmdBytes.Add(0);
+        await SendRawAsync(_activeEndpoint, cmdBytes.ToArray(), ct);
+    }
+
+    /// <summary>
+    /// Sends a raw command with arbitrary data to the connected server.
+    /// </summary>
+    /// <param name="cmd">The client command type byte.</param>
+    /// <param name="data">Raw payload bytes (appended after the command byte).</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task SendCommandAsync(ClientCommandType cmd, byte[] data, CancellationToken ct = default)
+    {
+        if (_activeEndpoint == null)
+            throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
+        var bytes = new List<byte> { (byte)cmd };
+        bytes.AddRange(data);
+        await SendRawAsync(_activeEndpoint, bytes.ToArray(), ct);
+    }
+
+    /// <summary>
     /// Resolves the hostname and begins the connection handshake.
     /// This method blocks until the <paramref name="ct"/> cancellation token is triggered.
     /// Use <see cref="Connected"/> to await handshake completion.
@@ -157,6 +189,7 @@ public class GoldsrcConnection : IDisposable
         var addresses = await Dns.GetHostAddressesAsync(host, ct);
         var ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork) ?? addresses[0];
         var ep = new IPEndPoint(ip, port);
+        _activeEndpoint = ep;
         _logger.LogDebug($"[DNS] resolved {host} -> {ep}");
         _sessions[ep] = SessionState.GetChallenge;
         _contexts[ep] = new ConnectionContext { ServerIp = BitConverter.ToUInt32(ep.Address.GetAddressBytes()), ServerPort = (ushort)ep.Port };
@@ -296,7 +329,7 @@ public class GoldsrcConnection : IDisposable
                 _logger.LogInformation($"Connection accepted by {ep}");
 
                 _logger.LogDebug($"[State] Connect0 -> Connected. Sending 'new' stringcmd");
-                await SendConnectedAsync(ep, ClientCommandType.StringCmd, "new", ct);
+                await SendStringCmdAsync(ClientCommandType.StringCmd, "new", ct);
                 return SessionState.Connected;
             }
 
@@ -789,21 +822,17 @@ public class GoldsrcConnection : IDisposable
         return SessionState.Connected;
     }
 
-    private async Task SendConnectedAsync(IPEndPoint ep, ClientCommandType cmd, string str, CancellationToken ct)
+    private async Task SendRawAsync(IPEndPoint ep, byte[] data, CancellationToken ct)
     {
         var ctx = _contexts[ep];
         uint srcSeq = ctx.SrcSequence++;
 
-        var cmdBytes = new List<byte> { (byte)cmd };
-        cmdBytes.AddRange(Encoding.UTF8.GetBytes(str));
-        cmdBytes.Add(0);
-
-        var payload = new byte[cmdBytes.Count + MessageConstants.ConnectedHeadSize];
+        var payload = new byte[data.Length + MessageConstants.ConnectedHeadSize];
         BitConverter.GetBytes(srcSeq | MessageConstants.SequenceModeCommand).CopyTo(payload, 0);
         BitConverter.GetBytes(ctx.DstSequence & MessageConstants.SequenceMask).CopyTo(payload, 4);
-        cmdBytes.CopyTo(payload, MessageConstants.ConnectedHeadSize);
+        data.CopyTo(payload, MessageConstants.ConnectedHeadSize);
 
-        _logger.LogDebug($"[SendConnected] cmd={cmd}(0x{(byte)cmd:X2}), str=\"{str}\", srcSeq={srcSeq}, dstSeq={ctx.DstSequence}, mungeKey={srcSeq & 0xFF}, totalLen={payload.Length}");
+        _logger.LogDebug($"[SendRaw] srcSeq={srcSeq}, dstSeq={ctx.DstSequence}, totalLen={payload.Length}");
         await _socket.SendAsync(new ReadOnlyMemory<byte>(payload), ep, ct);
     }
 

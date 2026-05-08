@@ -72,8 +72,10 @@ public partial class ConnectCommand : ICommand
 
         console.Output.WriteLine($"Connecting to {Host}:{Port} (timeout: {TimeoutSeconds}s)...");
 
+        var userCts = new CancellationTokenSource();
         var logger = new ConsoleLogger(console, Debug);
-        using var client = new GoldsrcConnection(logger, authProvider);
+        var messageHandler = new CliServerMessageHandler(console, Debug, userCts);
+        using var client = new GoldsrcConnection(logger, authProvider, messageHandler);
 
         if (!string.IsNullOrEmpty(UserInfoRaw))
         {
@@ -94,7 +96,21 @@ public partial class ConnectCommand : ICommand
             }
         }
 
-        client.OnServerInfo += (conn, info) => Emit("serverinfo", info, console);
+        client.OnServerInfo += (conn, info) =>
+        {
+            unsafe
+            {
+                var md5Bytes = new ReadOnlySpan<byte>(info.Md5ClientDll, 16);
+                console.Output.WriteLine("─────────────────────────────────────");
+                console.Output.WriteLine($"  Protocol:      {info.ProtocolVersion}");
+                console.Output.WriteLine($"  Max Clients:   {info.MaxClients}");
+                console.Output.WriteLine($"  Player Slot:   {info.PlayerNumber}");
+                console.Output.WriteLine($"  Spawn Count:   {info.SpawnCount}");
+                console.Output.WriteLine($"  Worldmap CRC:  0x{info.Munge3WorldmapCrc:X8} (encrypted)");
+                console.Output.WriteLine($"  ClientDLL MD5: {Convert.ToHexString(md5Bytes)}");
+                console.Output.WriteLine("─────────────────────────────────────");
+            }
+        };
         client.OnResourceList += (conn, resources) => Emit("resourcelist", new { count = resources.Length, resources }, console);
         client.OnDataPacket += (conn, raw) =>
         {
@@ -102,7 +118,6 @@ public partial class ConnectCommand : ICommand
                 Emit("raw_packet", new { length = raw.Length, hex = Convert.ToHexString(raw[..Math.Min(raw.Length, 128)]) }, console);
         };
 
-        var userCts = new CancellationTokenSource();
         console.RegisterCancellationHandler().Register(() =>
         {
             if (Debug)
