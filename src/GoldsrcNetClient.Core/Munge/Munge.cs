@@ -2,6 +2,17 @@ using System.Buffers.Binary;
 
 namespace GoldsrcNetClient.Core.Munge;
 
+/// <summary>
+/// XOR-based packet encryption/decryption used by the GoldSrc engine.
+/// Munge and UnMunge are inverse operations that use different lookup tables
+/// depending on the context:
+/// <list type="bullet">
+///   <item><b>Munge1</b> / <b>UnMunge1</b> — connectionless packet encryption.</item>
+///   <item><b>Munge2</b> / <b>UnMunge2</b> — connected packet encryption.</item>
+///   <item><b>Munge3</b> / <b>UnMunge3</b> — worldmap CRC encryption.</item>
+/// </list>
+/// All tables are derived from the original GoldSrc engine source.
+/// </summary>
 public static class MungeEngine
 {
     private static readonly byte[] _table1 = [0x7A, 0x64, 0x05, 0xF1, 0x1B, 0x9B, 0xA0, 0xB5, 0xCA, 0xED, 0x61, 0x0D, 0x4A, 0xDF, 0x8E, 0xC7];
@@ -58,12 +69,39 @@ public static class MungeEngine
         }
     }
 
+    /// <summary>Encrypts data using Munge table 1 (connectionless packets).</summary>
+    /// <param name="data">The byte array to munge in-place.</param>
+    /// <param name="len">Number of bytes to process (rounded down to nearest 4).</param>
+    /// <param name="seq">Sequence number used as the XOR key component.</param>
     public static void Munge1(byte[] data, int len, int seq) => Munge(data, len, seq, _table1);
+
+    /// <summary>Decrypts data using UnMunge table 1 (connectionless packets).</summary>
+    /// <param name="data">The byte array to unmunge in-place.</param>
+    /// <param name="len">Number of bytes to process (rounded down to nearest 4).</param>
+    /// <param name="seq">Sequence number used as the XOR key component.</param>
     public static void UnMunge1(byte[] data, int len, int seq) => UnMunge(data, len, seq, _table1);
 
+    /// <summary>Encrypts data using Munge table 2 (connected packets).</summary>
+    /// <param name="data">The byte array to munge in-place.</param>
+    /// <param name="len">Number of bytes to process (rounded down to nearest 4).</param>
+    /// <param name="seq">Sequence number used as the XOR key component.</param>
     public static void Munge2(byte[] data, int len, int seq) => Munge(data, len, seq, _table2);
+
+    /// <summary>Decrypts data using UnMunge table 2 (connected packets). Inverts <see cref="Munge2"/>.</summary>
+    /// <param name="data">The byte array to unmunge in-place.</param>
+    /// <param name="len">Number of bytes to process (rounded down to nearest 4).</param>
+    /// <param name="seq">Sequence number used as the XOR key component.</param>
     public static void UnMunge2(byte[] data, int len, int seq) => UnMunge(data, len, seq, _table2);
 
+    /// <summary>Encrypts data using Munge table 3 (worldmap CRC).</summary>
+    /// <param name="data">The byte array to munge in-place.</param>
+    /// <param name="len">Number of bytes to process (rounded down to nearest 4).</param>
+    /// <param name="seq">Sequence number used as the XOR key component.</param>
     public static void Munge3(byte[] data, int len, int seq) => Munge(data, len, seq, _table3);
+
+    /// <summary>Decrypts data using UnMunge table 3 (worldmap CRC). Inverts <see cref="Munge3"/>.</summary>
+    /// <param name="data">The byte array to unmunge in-place.</param>
+    /// <param name="len">Number of bytes to process (rounded down to nearest 4).</param>
+    /// <param name="seq">Sequence number used as the XOR key component.</param>
     public static void UnMunge3(byte[] data, int len, int seq) => UnMunge(data, len, seq, _table3);
 }

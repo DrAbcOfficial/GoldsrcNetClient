@@ -12,6 +12,21 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace GoldsrcNetClient.Core.Network;
 
+/// <summary>
+/// Main entry point for the GoldSrc (Half-Life 1) engine network client.
+/// Handles the full connection handshake (getchallenge → connect → connected),
+/// server message processing, packet Munge/UnMunge encryption, delta compression parsing,
+/// and resource list decoding. Supports both WON and Steam authentication protocols.
+/// </summary>
+/// <remarks>
+/// Usage:
+/// <code>
+/// var conn = new GoldsrcConnection(logger, authProvider);
+/// conn.OnServerInfo += (c, info) => Console.WriteLine($"Player #{info.PlayerNumber}");
+/// await conn.ConnectAsync("127.0.0.1", 27015);
+/// await conn.Connected;  // wait for handshake completion
+/// </code>
+/// </remarks>
 public class GoldsrcConnection : IDisposable
 {
     private static readonly byte[] GetChallengeSteamPacket =
@@ -31,17 +46,50 @@ public class GoldsrcConnection : IDisposable
     private readonly ILogger<GoldsrcConnection> _logger;
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>Delegate for <see cref="OnServerInfo"/> events.</summary>
+    /// <param name="conn">The connection that received the server info.</param>
+    /// <param name="info">Parsed server info data.</param>
     public delegate void ServerInfoHandler(GoldsrcConnection conn, ServerInfoData info);
+
+    /// <summary>
+    /// Raised when the server sends its <see cref="ServerMessageType.ServerInfo"/> block.
+    /// Contains protocol version, spawn count, worldmap CRC, player slot, and more.
+    /// </summary>
     public event ServerInfoHandler? OnServerInfo;
+
+    /// <summary>Delegate for <see cref="OnResourceList"/> events.</summary>
+    /// <param name="conn">The connection that received the resource list.</param>
+    /// <param name="resources">Array of resource descriptors (maps, models, sounds).</param>
     public delegate void ResourceListHandler(GoldsrcConnection conn, ResourceInfo[] resources);
+
+    /// <summary>
+    /// Raised when the server sends its <see cref="ServerMessageType.ResourceList"/>.
+    /// Lists all resources the server expects the client to have.
+    /// </summary>
     public event ResourceListHandler? OnResourceList;
+
+    /// <summary>Delegate for <see cref="OnDataPacket"/> events.</summary>
+    /// <param name="conn">The connection that received the data.</param>
+    /// <param name="data">Raw packet bytes (including header) for debugging or external processing.</param>
     public delegate void DataPacketHandler(GoldsrcConnection conn, byte[] data);
+
+    /// <summary>Raised for every connected (sequenced) packet received, before decryption.</summary>
     public event DataPacketHandler? OnDataPacket;
 
+    /// <summary>A task that completes when the connection handshake reaches <see cref="SessionState.Connected"/>.</summary>
     public Task Connected => _connectedTcs.Task;
 
+    /// <summary>
+    /// The current userinfo string sent during the connect handshake.
+    /// Uses the GoldSrc backslash-delimited key-value format:
+    /// <c>\name\PlayerName\protocol\48\...</c>.
+    /// Updated automatically when the server sends <see cref="ServerMessageType.UpdateUserInfo"/>.
+    /// </summary>
     public string UserInfo { get; set; } = "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000\\hltv\\0";
 
+    /// <summary>Sets a single key-value pair in the <see cref="UserInfo"/> string.</summary>
+    /// <param name="key">The key to set (case-insensitive).</param>
+    /// <param name="value">The new value for the key.</param>
     public void SetUserInfo(string key, string value)
     {
         var current = UserInfo;
@@ -63,6 +111,9 @@ public class GoldsrcConnection : IDisposable
         UserInfo = sb.ToString();
     }
 
+    /// <summary>Gets a value from the <see cref="UserInfo"/> string by key.</summary>
+    /// <param name="key">The key to look up (case-insensitive).</param>
+    /// <returns>The value string if found; <c>null</c> otherwise.</returns>
     public string? GetUserInfo(string key)
     {
         var parts = UserInfo.Split('\\');
@@ -74,6 +125,12 @@ public class GoldsrcConnection : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// Creates a new GoldSrc connection.
+    /// </summary>
+    /// <param name="logger">Optional logger; defaults to <see cref="NullLogger{GoldsrcConnection}"/>.</param>
+    /// <param name="authProvider">Steam auth provider; defaults to <see cref="NoSteamAuthProvider"/> which sends a fake key.</param>
+    /// <param name="localPort">Local UDP port to bind (0 = OS-assigned).</param>
     public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null, int localPort = 0)
     {
         _logger = logger ?? NullLogger<GoldsrcConnection>.Instance;
@@ -81,6 +138,14 @@ public class GoldsrcConnection : IDisposable
         _socket = new UdpClient(localPort);
     }
 
+    /// <summary>
+    /// Resolves the hostname and begins the connection handshake.
+    /// This method blocks until the <paramref name="ct"/> cancellation token is triggered.
+    /// Use <see cref="Connected"/> to await handshake completion.
+    /// </summary>
+    /// <param name="host">Server hostname or IP address.</param>
+    /// <param name="port">Server UDP port (default 27015).</param>
+    /// <param name="ct">Cancellation token to stop the receive loop.</param>
     public async Task ConnectAsync(string host, int port = 27015, CancellationToken ct = default)
     {
         _logger.LogDebug($"[State] Begin -> resolving {host}:{port}");
@@ -914,6 +979,7 @@ public class GoldsrcConnection : IDisposable
         return false;
     }
 
+    /// <summary>Closes the underlying UDP socket and releases all resources.</summary>
     public void Dispose()
     {
         _socket.Dispose();
@@ -939,9 +1005,18 @@ public class GoldsrcConnection : IDisposable
     }
 }
 
+/// <summary>
+/// Default no-op <see cref="ISteamAuthProvider"/> that reports Steam as unavailable
+/// and provides fake authentication data for servers that do not enforce Steam auth.
+/// </summary>
 public sealed class NoSteamAuthProvider : ISteamAuthProvider
 {
+    /// <inheritdoc/>
     public bool IsAvailable => false;
+
+    /// <inheritdoc/>
     public byte GetAuthProtocol() => 3;
+
+    /// <inheritdoc/>
     public string GetRawAuthData() => "steam";
 }

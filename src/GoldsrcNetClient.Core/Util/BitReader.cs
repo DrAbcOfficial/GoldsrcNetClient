@@ -1,7 +1,19 @@
 namespace GoldsrcNetClient.Core.Util;
 
+/// <summary>
+/// Static helper for reading bits from a byte buffer.
+/// Used by the GoldSrc delta compression and message parsing subsystems.
+/// </summary>
 public static class BitReader
 {
+    /// <summary>Reads bits from a source buffer into a destination buffer.</summary>
+    /// <param name="source">Source byte array to read bits from.</param>
+    /// <param name="sourceBitIndex">Current bit position in the source. Advanced after reading.</param>
+    /// <param name="sourceSize">Total size of the source buffer in bytes.</param>
+    /// <param name="destination">Destination byte array to write bits into.</param>
+    /// <param name="destBitIndex">Current bit position in the destination. Advanced after writing.</param>
+    /// <param name="bitCount">Number of bits to read.</param>
+    /// <returns>True if enough bits were available; false on underflow.</returns>
     public static bool ReadBits(byte[] source, ref int sourceBitIndex, int sourceSize,
         byte[] destination, ref int destBitIndex, int bitCount)
     {
@@ -38,6 +50,13 @@ public static class BitReader
         return true;
     }
 
+    /// <summary>Reads the specified number of bits into an unsigned 32-bit integer.</summary>
+    /// <param name="source">Source byte array.</param>
+    /// <param name="sourceBitIndex">Current bit position. Advanced after reading.</param>
+    /// <param name="sourceSize">Total source size in bytes.</param>
+    /// <param name="destination">Output value.</param>
+    /// <param name="bitCount">Number of bits to read (1-32).</param>
+    /// <returns>True on success; false on underflow.</returns>
     public static bool ReadBits(byte[] source, ref int sourceBitIndex, int sourceSize,
         ref uint destination, int bitCount)
     {
@@ -67,6 +86,13 @@ public static class BitReader
         return true;
     }
 
+    /// <summary>Reads the specified number of bits into a signed 32-bit integer.</summary>
+    /// <param name="source">Source byte array.</param>
+    /// <param name="sourceBitIndex">Current bit position. Advanced after reading.</param>
+    /// <param name="sourceSize">Total source size in bytes.</param>
+    /// <param name="destination">Output value.</param>
+    /// <param name="bitCount">Number of bits to read (1-32).</param>
+    /// <returns>True on success; false on underflow.</returns>
     public static bool ReadBits(byte[] source, ref int sourceBitIndex, int sourceSize,
         ref int destination, int bitCount)
     {
@@ -77,6 +103,13 @@ public static class BitReader
         return true;
     }
 
+    /// <summary>Reads a null-terminated string from the bitstream.</summary>
+    /// <param name="source">Source byte array.</param>
+    /// <param name="sourceBitIndex">Current bit position. Advanced after reading.</param>
+    /// <param name="sourceSize">Total source size in bytes.</param>
+    /// <param name="result">Output byte array (trimmed to actual length).</param>
+    /// <param name="maxSize">Maximum string length in bytes (default 64).</param>
+    /// <returns>True on success; false on underflow.</returns>
     public static bool ReadBitString(byte[] source, ref int sourceBitIndex, int sourceSize,
         out byte[] result, int maxSize = 64)
     {
@@ -101,6 +134,12 @@ public static class BitReader
         return true;
     }
 
+    /// <summary>Reads a GoldSrc bit-coordinate (fixed-point position with sign).</summary>
+    /// <param name="source">Source byte array.</param>
+    /// <param name="sourceBitIndex">Current bit position. Advanced after reading.</param>
+    /// <param name="sourceSize">Total source size in bytes.</param>
+    /// <param name="f">Output floating-point value.</param>
+    /// <returns>True on success; false on underflow.</returns>
     public static bool ReadBitCoord(byte[] source, ref int sourceBitIndex, int sourceSize,
         ref float f)
     {

@@ -1,7 +1,19 @@
 namespace GoldsrcNetClient.Core.Util;
 
+/// <summary>
+/// Static helper for writing bits into a byte buffer.
+/// Used by the GoldSrc delta compression and message building subsystems.
+/// </summary>
 public static class BitWriter
 {
+    /// <summary>Writes bits from a source buffer at an arbitrary bit offset into a destination buffer.</summary>
+    /// <param name="source">Source byte array.</param>
+    /// <param name="sourceBitIndex">Bit position in the source to start reading from.</param>
+    /// <param name="sourceBitCount">Number of bits to write.</param>
+    /// <param name="destination">Destination byte array.</param>
+    /// <param name="destBitIndex">Current write bit position. Advanced after writing.</param>
+    /// <param name="destSize">Total destination size in bytes.</param>
+    /// <returns>True on success; false if the destination cannot fit the bits.</returns>
     public static bool WriteBits(byte[] source, int sourceBitIndex, int sourceBitCount,
         byte[] destination, ref int destBitIndex, int destSize)
     {
@@ -43,6 +55,12 @@ public static class BitWriter
         return true;
     }
 
+    /// <summary>Writes the least-significant bits of an unsigned integer into the destination buffer.</summary>
+    /// <param name="value">The value to write.</param>
+    /// <param name="bitCount">Number of bits to write (1-32).</param>
+    /// <param name="destination">Destination byte array.</param>
+    /// <param name="destBitIndex">Current write bit position. Advanced after writing.</param>
+    /// <param name="destSize">Total destination size in bytes.</param>
     public static void WriteBits(uint value, int bitCount,
         byte[] destination, ref int destBitIndex, int destSize)
     {
@@ -78,6 +96,12 @@ public static class BitWriter
         }
     }
 
+    /// <summary>Writes bits from a source byte buffer (starting at bit 0) into the destination.</summary>
+    /// <param name="source">Source byte array.</param>
+    /// <param name="bitCount">Number of bits to write.</param>
+    /// <param name="destination">Destination byte array.</param>
+    /// <param name="destBitIndex">Current write bit position. Advanced after writing.</param>
+    /// <param name="destSize">Total destination size in bytes.</param>
     public static void WriteBits(byte[] source, int bitCount,
         byte[] destination, ref int destBitIndex, int destSize)
     {

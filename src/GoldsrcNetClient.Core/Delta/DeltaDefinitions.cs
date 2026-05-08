@@ -2,8 +2,15 @@ using GoldsrcNetClient.Core.Protocol;
 
 namespace GoldsrcNetClient.Core.Delta;
 
+/// <summary>
+/// Contains the predefined delta-compressed data type definitions used by
+/// the GoldSrc engine for efficient network state synchronization.
+/// Each <see cref="DeltaType"/> describes a struct whose fields can be
+/// sent incrementally (only changed fields) rather than in full each tick.
+/// </summary>
 public static class DeltaDefinitions
 {
+    /// <summary>Game event delta type (event_t). Contains entity index, parameters, origin, and angles.</summary>
     public static readonly DeltaType Event = new("event_t", 0x0E, [
         new("entindex", DeltaFieldFlag.Integer, 10, 1.0f),
         new("bparam1", DeltaFieldFlag.Integer, 1, 1.0f),
@@ -21,6 +28,7 @@ public static class DeltaDefinitions
         new("ducking", DeltaFieldFlag.Integer, 1, 1.0f),
     ]);
 
+    /// <summary>Weapon data delta type (weapon_data_t). Attack timers, clip ammo, zoom state, etc.</summary>
     public static readonly DeltaType WeaponData = new("weapon_data_t", 0x14, [
         new("m_flTimeWeaponIdle", DeltaFieldFlag.Float | DeltaFieldFlag.Signed, 22, 1000.0f),
         new("m_flNextPrimaryAttack", DeltaFieldFlag.Float | DeltaFieldFlag.Signed, 22, 1000.0f),
@@ -44,6 +52,7 @@ public static class DeltaDefinitions
         new("fuser3", DeltaFieldFlag.Signed | DeltaFieldFlag.Float, 22, 128.0f),
     ]);
 
+    /// <summary>User command delta type (usercmd_t). Client input: view angles, buttons, movement.</summary>
     public static readonly DeltaType UserCmd = new("usercmd_t", 0x0F, [
         new("lerp_msec", DeltaFieldFlag.Short, 9, 1.0f),
         new("msec", DeltaFieldFlag.Byte, 8, 1.0f),
@@ -62,6 +71,7 @@ public static class DeltaDefinitions
         new("impact_position[2]", DeltaFieldFlag.Signed | DeltaFieldFlag.Float, 16, 8.0f),
     ]);
 
+    /// <summary>Custom entity state delta type. Render properties for non-player entities.</summary>
     public static readonly DeltaType CustomEntityState = new("custom_entity_state_t", 0x13, [
         new("rendermode", DeltaFieldFlag.Integer, 8, 1.0f),
         new("origin[0]", DeltaFieldFlag.Signed | DeltaFieldFlag.Float, 17, 8.0f),
@@ -84,6 +94,7 @@ public static class DeltaDefinitions
         new("animtime", DeltaFieldFlag.Float, 8, 1.0f),
     ]);
 
+    /// <summary>Player entity state delta type. Full player state including model, team, weapons, spectator.</summary>
     public static readonly DeltaType EntityStatePlayer = new("entity_state_player_t", 0x31, [
         new("animtime", DeltaFieldFlag.TimeWindow8, 8, 1.0f),
         new("frame", DeltaFieldFlag.Float, 8, 1.0f),
@@ -136,6 +147,7 @@ public static class DeltaDefinitions
         new("spectator", DeltaFieldFlag.Integer, 1, 1.0f),
     ]);
 
+    /// <summary>Generic entity state delta type. Used for non-player game entities.</summary>
     public static readonly DeltaType EntityState = new("entity_state_t", 0x34, [
         new("animtime", DeltaFieldFlag.TimeWindow8, 8, 1.0f),
         new("frame", DeltaFieldFlag.Float, 10, 4.0f),
@@ -191,6 +203,7 @@ public static class DeltaDefinitions
         new("playerclass", DeltaFieldFlag.Integer, 1, 1.0f),
     ]);
 
+    /// <summary>Client data delta type (clientdata_t). Health, ammo, velocity, view offset, duck state, FOV, etc.</summary>
     public static readonly DeltaType ClientData = new("clientdata_t", 0x32, [
         new("flTimeStepSound", DeltaFieldFlag.Integer, 10, 1.0f),
         new("origin[0]", DeltaFieldFlag.Signed | DeltaFieldFlag.Float, 21, 128.0f),
@@ -244,8 +257,11 @@ public static class DeltaDefinitions
         new("fuser4", DeltaFieldFlag.Signed | DeltaFieldFlag.Float, 2, 128.0f),
     ]);
 
+    /// <summary>All predefined delta types in a single array for iteration.</summary>
     public static readonly DeltaType[] All = [Event, WeaponData, UserCmd, CustomEntityState, EntityStatePlayer, EntityState, ClientData];
 
+    /// <summary>Finds a delta type by its name. Returns <c>null</c> if not found.</summary>
+    /// <param name="name">The delta type name (e.g. "entity_state_t").</param>
     public static DeltaType? Find(string name)
     {
         foreach (var dt in All)
