@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
+using Microsoft.Extensions.Logging;
 
 namespace GoldsrcNetClient.Cli;
 
@@ -68,19 +69,14 @@ public partial class ConnectCommand : ICommand
 
         console.Output.WriteLine($"Connecting to {Host}:{Port} (timeout: {TimeoutSeconds}s)...");
 
-        using var client = new GoldsrcConnection(authProvider);
-        client.OnPrint += msg => Emit("print", new { text = msg }, console);
+        var logger = new ConsoleLogger(console, Debug);
+        using var client = new GoldsrcConnection(logger, authProvider);
         client.OnServerInfo += (conn, info) => Emit("serverinfo", info, console);
         client.OnResourceList += (conn, resources) => Emit("resourcelist", new { count = resources.Length, resources }, console);
         client.OnDataPacket += (conn, raw) =>
         {
             if (Debug)
                 Emit("raw_packet", new { length = raw.Length, hex = Convert.ToHexString(raw[..Math.Min(raw.Length, 128)]) }, console);
-        };
-        client.OnDebug += msg =>
-        {
-            if (Debug)
-                console.Error.WriteLine($"[DEBUG] {msg}");
         };
 
         var userCts = new CancellationTokenSource();
@@ -99,7 +95,14 @@ public partial class ConnectCommand : ICommand
                 if (Debug)
                     console.Error.WriteLine($"[DEBUG] Connecting with timeout={TimeoutSeconds}s, using linked cancellation token.");
 
-                await client.ConnectAsync(Host, Port, linkedCts.Token);
+                var connectTask = client.ConnectAsync(Host, Port, linkedCts.Token);
+                var completed = await Task.WhenAny(connectTask, client.Connected);
+
+                if (completed == connectTask)
+                {
+                    await connectTask;
+                    return;
+                }
             }
 
             console.Output.WriteLine("Connected. Press Ctrl+C to disconnect.");
@@ -132,5 +135,38 @@ public partial class ConnectCommand : ICommand
     private record ProtocolMessage(string Type, object Data)
     {
         public string Timestamp { get; init; } = DateTime.UtcNow.ToString("O");
+    }
+
+    private sealed class ConsoleLogger(IConsole console, bool debug) : ILogger<GoldsrcConnection>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public bool IsEnabled(LogLevel logLevel) => debug || logLevel >= LogLevel.Information;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (!IsEnabled(logLevel)) return;
+            var message = formatter(state, exception);
+            var prefix = logLevel switch
+            {
+                LogLevel.Trace => "[TRCE]",
+                LogLevel.Debug => "[DBG ]",
+                LogLevel.Information => "[INFO]",
+                LogLevel.Warning => "[WARN]",
+                LogLevel.Error => "[ERRO]",
+                LogLevel.Critical => "[CRIT]",
+                _ => "[????]"
+            };
+
+            if (logLevel >= LogLevel.Warning)
+                console.Error.WriteLine($"{prefix} {message}");
+            else
+                console.Output.WriteLine($"{prefix} {message}");
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+            public void Dispose() { }
+        }
     }
 }
