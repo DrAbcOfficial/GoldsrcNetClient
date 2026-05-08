@@ -49,7 +49,7 @@ public class GoldsrcConnection : IDisposable
         var ep = new IPEndPoint(addresses[0], port);
         OnDebug?.Invoke($"[DNS] resolved {host} -> {ep}");
         _sessions[ep] = SessionState.GetChallenge;
-        _contexts[ep] = new ConnectionContext();
+        _contexts[ep] = new ConnectionContext { ServerIp = BitConverter.ToUInt32(ep.Address.GetAddressBytes()), ServerPort = (ushort)ep.Port };
 
         OnDebug?.Invoke($"[State] Begin -> GetChallenge. Sending getchallenge (steam={_authProvider.IsAvailable}, authProto={_authProvider.GetAuthProtocol()})");
         var challengePacket = _authProvider.IsAvailable ? GetChallengeSteamPacket : GetChallengePacket;
@@ -129,7 +129,9 @@ public class GoldsrcConnection : IDisposable
                 string challengeFromField = parts[1];
 
                 ctx.AuthProtocol = parts.Length > 2 && int.TryParse(parts[2], out int ap) ? (byte)ap : AuthProtocolSteam;
-                OnDebug?.Invoke($"[Challenge] Format A: markerHex={challengeFromMarker}, field2={challengeFromField}, authProto={ctx.AuthProtocol}, parts={parts.Length}");
+                if (parts.Length > 3 && ulong.TryParse(parts[3], out ulong sid))
+                    ctx.ServerSteamId = sid;
+                OnDebug?.Invoke($"[Challenge] Format A: markerHex={challengeFromMarker}, field2={challengeFromField}, authProto={ctx.AuthProtocol}, serverSteamId={ctx.ServerSteamId}, parts={parts.Length}");
 
                 string challengeToken = challengeFromField;
                 OnDebug?.Invoke($"[Challenge] using field2 as challenge: {challengeToken}");
@@ -193,7 +195,17 @@ public class GoldsrcConnection : IDisposable
         var challengeStr = Encoding.ASCII.GetString(ctx.Challenge);
         var authProto = ctx.AuthProtocol;
 
-        var rawAuthBytes = _authProvider.GetRawAuthBytes();
+        byte[] rawAuthBytes;
+        if (_authProvider.IsAvailable && ctx.ServerSteamId != 0)
+        {
+            rawAuthBytes = _authProvider.GetGameAuthBytes(ctx.ServerSteamId, ctx.ServerIp, ctx.ServerPort);
+            OnDebug?.Invoke($"[Connect] using game auth ticket: serverSteamId={ctx.ServerSteamId}, len={rawAuthBytes.Length}");
+        }
+        else
+        {
+            rawAuthBytes = _authProvider.GetRawAuthBytes();
+        }
+
         string rawAuthStr;
         if (!_authProvider.IsAvailable)
         {
@@ -851,6 +863,9 @@ public class GoldsrcConnection : IDisposable
         public byte PlayerNumber;
         public ResourceInfo[] Resources = [];
         public List<UserMessage> UserMessages = [];
+        public ulong ServerSteamId;
+        public uint ServerIp;
+        public ushort ServerPort;
     }
 }
 

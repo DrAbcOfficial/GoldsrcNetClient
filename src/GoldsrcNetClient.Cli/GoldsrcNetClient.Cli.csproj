@@ -6,12 +6,8 @@
 
   <ItemGroup>
     <PackageReference Include="CliFx" Version="3.0.0" />
-    <PackageReference Include="Facepunch.Steamworks" Version="2.3.3" GeneratePathProperty="true" />
+    <PackageReference Include="Steamworks.NET" Version="2024.8.0" />
   </ItemGroup>
-
-  <Target Name="CopySteamNativeDll" AfterTargets="Build">
-    <Copy SourceFiles="$(PkgFacepunch_Steamworks)\content\steam_api64.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(PkgFacepunch_Steamworks)\content\steam_api64.dll')" />
-  </Target>
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>

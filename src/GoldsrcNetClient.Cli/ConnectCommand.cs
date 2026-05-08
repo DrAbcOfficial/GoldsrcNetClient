@@ -44,13 +44,12 @@ public partial class ConnectCommand : ICommand
         if (UseSteam)
         {
             console.Output.WriteLine($"Initializing Steam (AppID {AppId})...");
-            var steamAuth = new FacepunchSteamAuthProvider(AppId);
+            var steamAuth = new SteamNetAuthProvider(AppId);
             authDisposable = steamAuth;
 
             if (steamAuth.IsAvailable)
             {
-                var authLen = steamAuth.GetRawAuthData().Length;
-                console.Output.WriteLine($"Steam authentication enabled (ticket: {authLen} bytes).");
+                console.Output.WriteLine($"Steam authentication enabled.");
                 authProvider = steamAuth;
             }
             else
