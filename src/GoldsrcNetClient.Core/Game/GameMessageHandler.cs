@@ -13,7 +13,7 @@ namespace GoldsrcNetClient.Core.Game;
 /// </summary>
 /// <remarks>
 /// <para>Engine messages (types below <see cref="ServerMessageType.UserMessageStart"/>)
-/// fall through to built-in processing by returning <c>false</c>.</para>
+/// fall through to <see cref="Next"/> (if set) then to built-in processing.</para>
 ///
 /// <para>User messages (types at or above <see cref="ServerMessageType.UserMessageStart"/>)
 /// are dispatched by name. If the handler recognizes the message name, it parses and
@@ -34,6 +34,14 @@ public abstract class GameMessageHandler : IServerMessageHandler
     /// <summary>Registry of user message indices mapped to their names.</summary>
     protected readonly UserMessageRegistry Registry = new();
 
+    /// <summary>
+    /// Optional next handler in the chain. Called for engine messages that this
+    /// handler does not consume (returns <c>false</c> from <see cref="HandleMessage"/>).
+    /// Useful when combining game-specific user message handling with CLI interaction
+    /// (e.g. replying to <see cref="ServerMessageType.ResourceRequest"/>).
+    /// </summary>
+    public IServerMessageHandler? Next { get; set; }
+
     /// <summary>Raised when an unrecognized user message is received. Provides raw data for custom parsing.</summary>
     public event Action<RawUserMessage>? OnRawUserMessage;
 
@@ -43,7 +51,7 @@ public abstract class GameMessageHandler : IServerMessageHandler
         if (messageType == (byte)ServerMessageType.NewUserMsg)
         {
             Registry.Register(reader);
-            return false;
+            return true;
         }
 
         if (messageType >= (byte)ServerMessageType.UserMessageStart)
@@ -60,6 +68,9 @@ public abstract class GameMessageHandler : IServerMessageHandler
             reader.Offset = reader.Size;
             return true;
         }
+
+        if (Next != null && Next.HandleMessage(connection, messageType, reader))
+            return true;
 
         return false;
     }

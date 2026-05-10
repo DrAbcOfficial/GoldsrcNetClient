@@ -37,9 +37,9 @@ public sealed class UserMessageRegistry
                 var msg = *(NewUserMsgData*)p;
                 reader.Offset += msgSize;
 
-                var name = "";
-                for (int i = 0; i < 16 && msg.NameData[i] != 0; i++)
-                    name += (char)msg.NameData[i];
+                int len = 0;
+                while (len < 16 && msg.NameData[len] != 0) len++;
+                var name = Encoding.ASCII.GetString(msg.NameData, len);
 
                 if (name.Length > 0)
                     _messages[msg.Index] = name;

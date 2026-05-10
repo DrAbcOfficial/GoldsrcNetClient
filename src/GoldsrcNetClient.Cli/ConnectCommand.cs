@@ -3,6 +3,7 @@ using CliFx.Binding;
 using CliFx.Infrastructure;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using Microsoft.Extensions.Logging;
@@ -74,7 +75,17 @@ public partial class ConnectCommand : ICommand
 
         var userCts = new CancellationTokenSource();
         var logger = new ConsoleLogger(console, Debug);
-        var messageHandler = new CliServerMessageHandler(console, Debug, userCts);
+
+        var cliHandler = new CliServerMessageHandler(console, Debug, userCts);
+        var gameHandler = AppId switch
+        {
+            10 => new CounterStrikeMessageHandler(),
+            225840 => new SvenCoopMessageHandler(),
+            _ => new HalfLifeMessageHandler(),
+        };
+        gameHandler.Next = cliHandler;
+        var messageHandler = gameHandler;
+
         using var client = new GoldsrcConnection(logger, authProvider, messageHandler);
 
         if (!string.IsNullOrEmpty(UserInfoRaw))
