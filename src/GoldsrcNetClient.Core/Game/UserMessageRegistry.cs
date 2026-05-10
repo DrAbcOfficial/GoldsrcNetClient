@@ -39,7 +39,7 @@ public sealed class UserMessageRegistry
 
                 int len = 0;
                 while (len < 16 && msg.NameData[len] != 0) len++;
-                var name = Encoding.ASCII.GetString(msg.NameData, len);
+                var name = Encoding.UTF8.GetString(msg.NameData, len);
 
                 if (name.Length > 0)
                     _messages[msg.Index] = name;
