@@ -48,7 +48,7 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
         if (_ticketData.Length > 0)
             return _ticketData;
 
-        return System.Text.Encoding.ASCII.GetBytes("steam");
+        return System.Text.Encoding.UTF8.GetBytes("steam");
     }
 
     public byte[] GetGameAuthBytes(ulong serverSteamId, uint serverIp, ushort serverPort)

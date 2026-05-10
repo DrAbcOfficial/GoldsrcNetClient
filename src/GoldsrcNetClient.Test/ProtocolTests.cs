@@ -315,7 +315,7 @@ public class BitReaderExtendedTests
 
         bool ok = BitReader.ReadBitString(data, ref bitIdx, data.Length, out byte[] result, 32);
         Assert.True(ok);
-        Assert.Equal("Hello", System.Text.Encoding.ASCII.GetString(result));
+        Assert.Equal("Hello", System.Text.Encoding.UTF8.GetString(result));
     }
 
     [Fact]
