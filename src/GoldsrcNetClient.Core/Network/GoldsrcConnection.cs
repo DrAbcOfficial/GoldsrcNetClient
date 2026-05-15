@@ -47,6 +47,10 @@ public class GoldsrcConnection : IDisposable
     private readonly ILogger<GoldsrcConnection> _logger;
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IPEndPoint? _activeEndpoint;
+    private bool _sentContinueLoading;
+    private bool _sentPrespawn;
+    private bool _sentSpawn;
+    private bool _sentBegin;
 
     /// <summary>Delegate for <see cref="OnServerInfo"/> events.</summary>
     /// <param name="conn">The connection that received the server info.</param>
@@ -457,6 +461,11 @@ public class GoldsrcConnection : IDisposable
                 _logger.LogDebug($"[Print] msg=\"{msg[..Math.Min(msg.Length, 200)]}\"");
                 _logger.LogInformation(msg);
             }
+            else if (dataType == (byte)ServerMessageType.CenterPrint)
+            {
+                string centerMsg = reader.ReadString();
+                _logger.LogDebug($"[CenterPrint] msg=\"{centerMsg}\"");
+            }
             else if (dataType == (byte)ServerMessageType.ServerInfo)
             {
                 int structSize = 33;
@@ -493,6 +502,19 @@ public class GoldsrcConnection : IDisposable
                     reader.Offset++;
 
                 OnServerInfo?.Invoke(this, si);
+
+                if (!_sentContinueLoading)
+                {
+                    _sentContinueLoading = true;
+                    _logger.LogDebug("[SignOn] sending continueloading");
+                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "continueloading", CancellationToken.None);
+                }
+                if (!_sentPrespawn)
+                {
+                    _sentPrespawn = true;
+                    _logger.LogDebug("[SignOn] sending prespawn");
+                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "prespawn", CancellationToken.None);
+                }
             }
             else if (dataType == (byte)ServerMessageType.DeltaDescription)
             {
@@ -610,6 +632,13 @@ public class GoldsrcConnection : IDisposable
                 ProcessResourceList(ctx, reader);
                 _logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={reader.Offset - listStart}");
                 OnResourceList?.Invoke(this, ctx.Resources);
+
+                if (!_sentContinueLoading)
+                {
+                    _sentContinueLoading = true;
+                    _logger.LogDebug("[SignOn] sending continueloading (from ResourceList)");
+                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "continueloading", CancellationToken.None);
+                }
             }
             else if (dataType == (byte)ServerMessageType.TempEntity)
             {
@@ -631,6 +660,19 @@ public class GoldsrcConnection : IDisposable
                 uint requestId = reader.ReadUInt32();
                 string cvarName = reader.ReadString();
                 _logger.LogDebug($"[SendCvarValue2] requestId={requestId}, cvar=\"{cvarName}\"");
+                var reply = new List<byte>();
+                MessageWriter.WriteUInt32(reply, requestId);
+                MessageWriter.WriteString(reply, cvarName);
+                MessageWriter.WriteString(reply, GetDefaultCvarValue(cvarName));
+                _ = SendCommandAsync(ClientCommandType.CvarValue2, reply.ToArray(), CancellationToken.None);
+            }
+            else if (dataType == (byte)ServerMessageType.SendCvarValue)
+            {
+                string cvarName = reader.ReadString();
+                _logger.LogDebug($"[SendCvarValue] cvar=\"{cvarName}\"");
+                var reply = new List<byte>();
+                MessageWriter.WriteString(reply, GetDefaultCvarValue(cvarName));
+                _ = SendCommandAsync(ClientCommandType.CvarValue, reply.ToArray(), CancellationToken.None);
             }
             else if (dataType == (byte)ServerMessageType.SpawnBaseline)
             {
@@ -682,6 +724,15 @@ public class GoldsrcConnection : IDisposable
 
                 reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
                 _logger.LogDebug($"[SpawnBaseline] done, totalBits={bitIdx}, newOffset={reader.Offset}");
+
+                if (!_sentSpawn && _sentPrespawn)
+                {
+                    _sentSpawn = true;
+                    if (ctx.SpawnCount == 0) ctx.SpawnCount = 1;
+                    var spawnCmd = $"spawn {ctx.SpawnCount} {ctx.PlayerNumber}";
+                    _logger.LogDebug($"[SignOn] sending {spawnCmd}");
+                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, spawnCmd, CancellationToken.None);
+                }
             }
             else if (dataType == (byte)ServerMessageType.Time)
             {
@@ -728,6 +779,13 @@ public class GoldsrcConnection : IDisposable
                 }
                 _logger.LogDebug($"[ClientData] done, weaponDeltas={weaponCount}");
                 reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+
+                if (!_sentBegin && _sentSpawn)
+                {
+                    _sentBegin = true;
+                    _logger.LogDebug("[SignOn] sending begin");
+                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "begin", CancellationToken.None);
+                }
             }
             else if (dataType == (byte)ServerMessageType.SignOnNum)
             {
@@ -787,18 +845,188 @@ public class GoldsrcConnection : IDisposable
             else if (dataType == (byte)ServerMessageType.Customization)
             {
                 if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 1"); return SessionState.Connected; }
-                reader.Offset += 1;
+                byte playerSlot = reader.Data[reader.Offset++];
                 if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 2"); return SessionState.Connected; }
-                reader.Offset += 1;
-                reader.ReadString();
+                byte resourceType = reader.Data[reader.Offset++];
+                string resourceName = reader.ReadString();
                 if (reader.Offset + 2 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 3"); return SessionState.Connected; }
                 reader.Offset += 2;
                 if (reader.Offset + 4 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 4"); return SessionState.Connected; }
                 reader.Offset += 4;
                 if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[Customization] buffer overflow at 5"); return SessionState.Connected; }
                 reader.Offset += 1;
+                _logger.LogDebug($"[Customization] player={playerSlot}, type={resourceType}, name=\"{resourceName}\"");
             }
             else if (dataType == (byte)ServerMessageType.Choke) { }
+            else if (dataType == (byte)ServerMessageType.Event)
+            {
+                _logger.LogDebug("[Event] game event received, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.Version)
+            {
+                if (reader.Offset + 4 > reader.Size) { _logger.LogWarning("[Version] buffer overflow"); return SessionState.Connected; }
+                uint version = reader.ReadUInt32();
+                _logger.LogDebug($"[Version] protocol={version}");
+            }
+            else if (dataType == (byte)ServerMessageType.StopSound)
+            {
+                if (reader.Offset + 2 > reader.Size) { _logger.LogWarning("[StopSound] buffer overflow"); return SessionState.Connected; }
+                reader.Offset += 2;
+            }
+            else if (dataType == (byte)ServerMessageType.Pings)
+            {
+                int bitIdx = 0;
+                for (int i = 0; i < 32; i++)
+                {
+                    uint hasEntry = 0;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasEntry, 1))
+                        break;
+                    if (hasEntry == 0) break;
+                    uint slot = 0;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref slot, 5)) return SessionState.Connected;
+                    uint ping = 0;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref ping, 12)) return SessionState.Connected;
+                    uint loss = 0;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref loss, 7)) return SessionState.Connected;
+                }
+                reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+            }
+            else if (dataType == (byte)ServerMessageType.Particle)
+            {
+                _logger.LogDebug("[Particle] particle effect, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.Damage)
+            {
+                if (reader.Offset + 8 > reader.Size) { _logger.LogWarning("[Damage] buffer overflow"); return SessionState.Connected; }
+                reader.Offset += 8;
+                if (reader.Offset + 3 > reader.Size) { _logger.LogWarning("[Damage] buffer overflow at coords"); return SessionState.Connected; }
+                reader.Offset += 3;
+            }
+            else if (dataType == (byte)ServerMessageType.SpawnStatic)
+            {
+                _logger.LogDebug("[SpawnStatic] static entity, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.EventReliable)
+            {
+                _logger.LogDebug("[EventReliable] reliable event, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.SetPause)
+            {
+                uint paused = 0;
+                int bitIdx = 0;
+                BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref paused, 1);
+                reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+                _logger.LogDebug($"[SetPause] paused={paused}");
+            }
+            else if (dataType == (byte)ServerMessageType.KilledMonster) { }
+            else if (dataType == (byte)ServerMessageType.FoundSecret) { }
+            else if (dataType == (byte)ServerMessageType.Intermission)
+            {
+                _logger.LogDebug("[Intermission] intermission started");
+            }
+            else if (dataType == (byte)ServerMessageType.Finale)
+            {
+                string finaleStr = reader.ReadString();
+                _logger.LogDebug($"[Finale] text=\"{finaleStr}\"");
+            }
+            else if (dataType == (byte)ServerMessageType.CdTrack)
+            {
+                if (reader.Offset + 2 > reader.Size) { _logger.LogWarning("[CdTrack] buffer overflow"); return SessionState.Connected; }
+                byte track = reader.ReadByte();
+                byte loopTrack = reader.ReadByte();
+                _logger.LogDebug($"[CdTrack] track={track}, loop={loopTrack}");
+            }
+            else if (dataType == (byte)ServerMessageType.Restore)
+            {
+                _logger.LogDebug("[Restore] restore game state, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.Cutscene)
+            {
+                string cutscene = reader.ReadString();
+                _logger.LogDebug($"[Cutscene] name=\"{cutscene}\"");
+            }
+            else if (dataType == (byte)ServerMessageType.WeaponAnim)
+            {
+                if (reader.Offset + 2 > reader.Size) { _logger.LogWarning("[WeaponAnim] buffer overflow"); return SessionState.Connected; }
+                byte anim = reader.ReadByte();
+                byte body = reader.ReadByte();
+                _logger.LogDebug($"[WeaponAnim] anim={anim}, body={body}");
+            }
+            else if (dataType == (byte)ServerMessageType.DecalName)
+            {
+                if (reader.Offset + 2 > reader.Size) { _logger.LogWarning("[DecalName] buffer overflow"); return SessionState.Connected; }
+                reader.Offset += 2;
+            }
+            else if (dataType == (byte)ServerMessageType.RoomType)
+            {
+                if (reader.Offset + 2 > reader.Size) { _logger.LogWarning("[RoomType] buffer overflow"); return SessionState.Connected; }
+                reader.Offset += 2;
+            }
+            else if (dataType == (byte)ServerMessageType.AddAngle)
+            {
+                if (reader.Offset + 2 > reader.Size) { _logger.LogWarning("[AddAngle] buffer overflow"); return SessionState.Connected; }
+                reader.Offset += 2;
+            }
+            else if (dataType == (byte)ServerMessageType.PacketEntities)
+            {
+                _logger.LogDebug("[PacketEntities] full entity packet, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.DeltaPacketEntities)
+            {
+                _logger.LogDebug("[DeltaPacketEntities] delta entity packet, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.CrosshairAngle)
+            {
+                if (reader.Offset + 2 > reader.Size) { _logger.LogWarning("[CrosshairAngle] buffer overflow"); return SessionState.Connected; }
+                reader.Offset += 2;
+            }
+            else if (dataType == (byte)ServerMessageType.SoundFade)
+            {
+                if (reader.Offset + 4 > reader.Size) { _logger.LogWarning("[SoundFade] buffer overflow"); return SessionState.Connected; }
+                reader.Offset += 4;
+            }
+            else if (dataType == (byte)ServerMessageType.FileTxferFailed)
+            {
+                string failName = reader.ReadString();
+                _logger.LogDebug($"[FileTxferFailed] file=\"{failName}\"");
+            }
+            else if (dataType == (byte)ServerMessageType.Hltv)
+            {
+                _logger.LogDebug("[Hltv] HLTV data, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.Director)
+            {
+                _logger.LogDebug("[Director] director command, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.VoiceData)
+            {
+                _logger.LogDebug("[VoiceData] voice data, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.SendExtraInfo)
+            {
+                _logger.LogDebug("[SendExtraInfo] extra info, skipping");
+                reader.Offset = reader.Size;
+            }
+            else if (dataType == (byte)ServerMessageType.TimeScale)
+            {
+                reader.ReadSingle(out float timeScale);
+                _logger.LogDebug($"[TimeScale] scale={timeScale:F2}");
+            }
+            else if (dataType == (byte)ServerMessageType.Exec)
+            {
+                string execCmd = reader.ReadString();
+                _logger.LogDebug($"[Exec] cmd=\"{execCmd}\"");
+            }
             else if (dataType == 'B' && reader.Offset + 2 < reader.Size && reader.Data[reader.Offset] == 'Z' && reader.Data[reader.Offset + 1] == '2' && reader.Data[reader.Offset + 2] == 0)
             {
                 _logger.LogWarning("[BZ2] compressed data detected, skipping");
@@ -1010,6 +1238,22 @@ public class GoldsrcConnection : IDisposable
                 return true;
         }
         return false;
+    }
+
+    private static string GetDefaultCvarValue(string name)
+    {
+        return name.ToLowerInvariant() switch
+        {
+            "cl_lc" or "cl_lw" or "cl_updaterate" => "1",
+            "rate" => "20000",
+            "name" => "GoldsrcNetClient",
+            "topcolor" or "bottomcolor" => "0",
+            "model" => "gordon",
+            "_cl_autowepswitch" => "1",
+            "cl_dlmax" => "80",
+            "hltv" => "0",
+            _ => "0"
+        };
     }
 
     /// <summary>Closes the underlying UDP socket and releases all resources.</summary>

@@ -29,3 +29,4 @@ dotnet run --project src/GoldsrcNetClient.Cli -- connect <host> [--port 27015] [
 - Delta-compressed entity state, player state, clientdata, and weapon data parsing
 - Packet fragmentation and reassembly
 - Resource list and file consistency processing
+- Interactive CLI input shell — type console commands at the `>  ` prompt to send `clc_stringcmd` packets to the server

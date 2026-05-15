@@ -25,6 +25,9 @@ public partial class ConnectCommand : ICommand
     [CommandOption("steam", 's', Description = "Use Steam authentication (requires Steam client running).")]
     public bool UseSteam { get; set; }
 
+    [CommandOption("steamkit", Description = "Use SteamKit2 authentication (requires Steam mobile app for QR code scan). Mutually exclusive with --steam.")]
+    public bool UseSteamKit { get; set; }
+
     [CommandOption("appid", Description = "Steam AppId for authentication. Default: 70 (Half-Life).")]
     public uint AppId { get; set; } = 70;
 
@@ -46,6 +49,12 @@ public partial class ConnectCommand : ICommand
         ISteamAuthProvider? authProvider = null;
         IDisposable? authDisposable = null;
 
+        if (UseSteam && UseSteamKit)
+        {
+            console.Error.WriteLine("Error: --steam and --steamkit are mutually exclusive.");
+            return;
+        }
+
         if (UseSteam)
         {
             console.Output.WriteLine($"Initializing Steam (AppID {AppId})...");
@@ -62,6 +71,32 @@ public partial class ConnectCommand : ICommand
                 console.Error.WriteLine($"Steam init failed: {steamAuth.LastError ?? "unknown error"}");
                 console.Error.WriteLine("Falling back to basic auth.");
                 steamAuth.Dispose();
+                authDisposable = null;
+            }
+        }
+        else if (UseSteamKit)
+        {
+            console.Output.WriteLine($"Initializing SteamKit2 (AppID {AppId})...");
+            var steamKitAuth = new SteamKitAuthProvider(AppId);
+            authDisposable = steamKitAuth;
+
+            try
+            {
+                console.Output.WriteLine("Connecting to Steam...");
+                await steamKitAuth.ConnectAsync();
+                console.Output.WriteLine("Connected to Steam. Starting QR code login...");
+                var qrDisplay = await steamKitAuth.BeginQrLoginAsync();
+                console.Output.WriteLine(qrDisplay);
+                console.Output.WriteLine("Waiting for authentication...");
+                await steamKitAuth.WaitForLoginAsync();
+                console.Output.WriteLine("SteamKit2 authentication successful.");
+                authProvider = steamKitAuth;
+            }
+            catch (Exception ex)
+            {
+                console.Error.WriteLine($"SteamKit2 init failed: {ex.Message}");
+                if (Debug) console.Error.WriteLine($"[DEBUG] {ex}");
+                steamKitAuth.Dispose();
                 authDisposable = null;
             }
         }
@@ -129,6 +164,39 @@ public partial class ConnectCommand : ICommand
                 Emit("raw_packet", new { length = raw.Length, hex = Convert.ToHexString(raw[..Math.Min(raw.Length, 128)]) }, console);
         };
 
+        gameHandler.SayText += ev => console.Output.WriteLine($"[Say] player={ev.SenderId} \"{ev.Message}\"");
+        gameHandler.TextMsg += ev =>
+        {
+            var dest = ev.MsgDest switch
+            {
+                1 => "console",
+                2 => "chat",
+                3 => "center",
+                4 => "centernostay",
+                _ => $"?{ev.MsgDest}"
+            };
+            console.Output.WriteLine($"[TextMsg] ({dest}) {ev.Message}");
+        };
+        gameHandler.HudText += ev =>
+        {
+            if (Debug)
+                console.Error.WriteLine($"[HudText] code=\"{ev.TextCode}\" style={ev.Style}");
+        };
+
+        if (gameHandler is CounterStrikeMessageHandler csHandler)
+        {
+            csHandler.HudTextArgs += ev =>
+            {
+                if (Debug)
+                    console.Error.WriteLine($"[HudTextArgs] code=\"{ev.TextCode}\" style={ev.Style} args=[{string.Join(", ", ev.Args)}]");
+            };
+            csHandler.HudTextPro += ev =>
+            {
+                if (Debug)
+                    console.Error.WriteLine($"[HudTextPro] code=\"{ev.TextCode}\" style={ev.Style}");
+            };
+        }
+
         console.RegisterCancellationHandler().Register(() =>
         {
             if (Debug)
@@ -154,8 +222,27 @@ public partial class ConnectCommand : ICommand
                 }
             }
 
-            console.Output.WriteLine("Connected. Press Ctrl+C to disconnect.");
-            await Task.Delay(Timeout.Infinite, userCts.Token);
+            console.Output.WriteLine("Connected. Type a command and press Enter to send (clc_stringcmd). Press Ctrl+C to disconnect.");
+            while (!userCts.Token.IsCancellationRequested)
+            {
+                console.Output.Write("> ");
+                console.Output.Flush();
+                var readTask = console.Input.ReadLineAsync();
+                try
+                {
+                    var completed = await Task.WhenAny(readTask, Task.Delay(-1, userCts.Token));
+                    if (completed != readTask || userCts.Token.IsCancellationRequested)
+                        break;
+                    var input = await readTask;
+                    if (input == null)
+                        break;
+                    await client.SendStringCmdAsync(ClientCommandType.StringCmd, input, userCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
         }
         catch (OperationCanceledException) when (!userCts.IsCancellationRequested)
         {

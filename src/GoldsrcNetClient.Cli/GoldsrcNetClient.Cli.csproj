@@ -6,6 +6,8 @@
 
   <ItemGroup>
     <PackageReference Include="CliFx" Version="3.0.0" />
+    <PackageReference Include="QRCoder" Version="1.8.0" />
+    <PackageReference Include="SteamKit2" Version="3.4.0" />
     <PackageReference Include="Steamworks.NET.AnyCPU" Version="2025.162.7" />
   </ItemGroup>
 

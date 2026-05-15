@@ -145,7 +145,6 @@ public sealed class CliServerMessageHandler : IServerMessageHandler
     private static async Task SendCvarValueReply(GoldsrcConnection connection, string name, string value)
     {
         var data = new List<byte>();
-        MessageWriter.WriteString(data, name);
         MessageWriter.WriteString(data, value);
         await connection.SendCommandAsync(ClientCommandType.CvarValue, data.ToArray());
     }
