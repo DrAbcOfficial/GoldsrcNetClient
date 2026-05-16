@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Text;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.SteamProvider;
+using GoldsrcNetClient.Tui.Services;
 using Terminal.Gui.App;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
@@ -11,6 +12,7 @@ namespace GoldsrcNetClient.Tui.Views;
 public sealed class SettingsView : View
 {
     private readonly AppData _appData;
+    private readonly UserInfoStore _userInfoStore;
     private readonly TextField _nameTf;
     private readonly TextField _modelTf;
     private readonly TextField _topColorTf;
@@ -23,23 +25,17 @@ public sealed class SettingsView : View
     private readonly TextView _qrText;
     private readonly Button _qrBtn;
     private readonly Label _qrStatus;
-    private readonly DropDownList _appIdDd;
-    private readonly FrameView _appIdFrame;
     private SteamKitAuthProvider? _steamKitAuth;
     private bool _qrLoggedIn;
 
     public event Action? LoggedIn;
 
-    private static readonly (string Label, uint AppId)[] AppIdOptions =
-    [
-        ("Half-Life", 70),
-        ("Counter-Strike", 10),
-        ("Sven Co-op", 225840),
-    ];
-
-    public SettingsView(AppData appData)
+    public SettingsView(AppData appData, UserInfoStore userInfoStore)
     {
         _appData = appData;
+        _userInfoStore = userInfoStore;
+        userInfoStore.Load();
+        var d = userInfoStore.Data;
         Width = Dim.Fill();
         Height = Dim.Fill();
 
@@ -52,12 +48,12 @@ public sealed class SettingsView : View
             Add(lbl, tf);
         }
 
-        AddField("name:", 0, out _, out _nameTf, "GoldsrcNetClient");
-        AddField("model:", 1, out _, out _modelTf, "gordon");
-        AddField("topcolor:", 2, out _, out _topColorTf, "0");
-        AddField("bottomcolor:", 3, out _, out _bottomColorTf, "0");
-        AddField("rate:", 4, out _, out _rateTf, "20000");
-        AddField("cl_updaterate:", 5, out _, out _updaterateTf, "60");
+        AddField("name:", 0, out _, out _nameTf, d.Name);
+        AddField("model:", 1, out _, out _modelTf, d.Model);
+        AddField("topcolor:", 2, out _, out _topColorTf, d.TopColor);
+        AddField("bottomcolor:", 3, out _, out _bottomColorTf, d.BottomColor);
+        AddField("rate:", 4, out _, out _rateTf, d.Rate);
+        AddField("cl_updaterate:", 5, out _, out _updaterateTf, d.ClUpdaterate);
 
         FrameView loginFrame = new FrameView
         {
@@ -86,26 +82,10 @@ public sealed class SettingsView : View
         loginFrame.Add(_loginBtn);
         Add(loginFrame);
 
-        List<string> appIdLabels = AppIdOptions.Select(a => a.Label).ToList();
-        _appIdFrame = new FrameView
-        {
-            Title = "Steam AppID",
-            X = 1, Y = 23, Width = 40, Height = 4
-        };
-        _appIdDd = new DropDownList
-        {
-            X = 1, Y = 0, Width = 36,
-            Source = new ListWrapper<string>(new ObservableCollection<string>(appIdLabels)),
-            ReadOnly = true,
-            Value = appIdLabels[0]
-        };
-        _appIdFrame.Add(_appIdDd);
-        Add(_appIdFrame);
-
         Button goBtn = new Button
         {
             Text = "Proceed to Connection",
-            X = 1, Y = 28, Width = 40
+            X = 1, Y = 23, Width = 40
         };
         goBtn.Accepting += (s, e) => LoggedIn?.Invoke();
         Add(goBtn);
@@ -133,28 +113,20 @@ public sealed class SettingsView : View
             int idx = loginMethods.IndexOf(val ?? "");
             if (idx < 0) return;
             _qrFrame.Visible = idx == 2;
-            _appIdFrame.Visible = idx != 0;
             _loginBtn.Visible = idx == 2;
             _appData.LoginMethod = (LoginMethod)idx;
-            if (_appData.LoginMethod != LoginMethod.NoSteam)
-                _appData.SteamAppId = GetSelectedAppId();
         };
     }
 
     public void FocusFirstField() => _nameTf.SetFocus();
 
-    private uint GetSelectedAppId()
-    {
-        string? label = _appIdDd.Value?.ToString();
-        int idx = Array.FindIndex(AppIdOptions, a => a.Label == label);
-        return idx >= 0 ? AppIdOptions[idx].AppId : 70u;
-    }
+    private static uint DefaultAppId => 70;
 
     private void StartSteamKitLogin()
     {
         if (_qrLoggedIn) return;
 
-        uint appId = GetSelectedAppId();
+        uint appId = DefaultAppId;
 
         _qrBtn.Enabled = false;
         _qrStatus.Text = "Connecting to Steam...";
@@ -186,6 +158,8 @@ public sealed class SettingsView : View
                 _appData.AuthProvider = _steamKitAuth;
                 _appData.LoginMethod = LoginMethod.SteamKit;
                 _appData.SteamAppId = appId;
+                _appData.SteamUsername = _steamKitAuth.SteamUsername;
+                _appData.SteamId = _steamKitAuth.SteamId;
             }
             catch (Exception ex)
             {
@@ -197,13 +171,24 @@ public sealed class SettingsView : View
 
     public void ApplyUserInfo()
     {
+        var data = new UserInfoData
+        {
+            Name = _nameTf.Text ?? "",
+            Model = _modelTf.Text ?? "",
+            TopColor = _topColorTf.Text ?? "0",
+            BottomColor = _bottomColorTf.Text ?? "0",
+            Rate = _rateTf.Text ?? "20000",
+            ClUpdaterate = _updaterateTf.Text ?? "60",
+        };
+        _userInfoStore.Save(data);
+
         StringBuilder sb = new StringBuilder();
-        sb.Append("\\name\\").Append(_nameTf.Text);
-        sb.Append("\\model\\").Append(_modelTf.Text);
-        sb.Append("\\topcolor\\").Append(_topColorTf.Text);
-        sb.Append("\\bottomcolor\\").Append(_bottomColorTf.Text);
-        sb.Append("\\rate\\").Append(_rateTf.Text);
-        sb.Append("\\cl_updaterate\\").Append(_updaterateTf.Text);
+        sb.Append("\\name\\").Append(data.Name);
+        sb.Append("\\model\\").Append(data.Model);
+        sb.Append("\\topcolor\\").Append(data.TopColor);
+        sb.Append("\\bottomcolor\\").Append(data.BottomColor);
+        sb.Append("\\rate\\").Append(data.Rate);
+        sb.Append("\\cl_updaterate\\").Append(data.ClUpdaterate);
         sb.Append("\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\hltv\\0");
         _appData.UserInfo = sb.ToString();
     }
@@ -216,8 +201,7 @@ public sealed class SettingsView : View
                 return null;
             case LoginMethod.SteamApi:
             {
-                uint appId = GetSelectedAppId();
-                SteamNetAuthProvider auth = new SteamNetAuthProvider(appId);
+                SteamNetAuthProvider auth = new SteamNetAuthProvider(DefaultAppId);
                 _appData.AuthDisposable = auth;
                 if (auth.IsAvailable)
                     return auth;
@@ -225,7 +209,9 @@ public sealed class SettingsView : View
                 return null;
             }
             case LoginMethod.SteamKit:
-                return _appData.AuthProvider;
+                if (_steamKitAuth == null || !_steamKitAuth.IsAvailable)
+                    return null;
+                return _steamKitAuth;
             default:
                 return null;
         }

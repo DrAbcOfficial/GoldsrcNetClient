@@ -9,4 +9,6 @@ public sealed class AppData
     public LoginMethod LoginMethod { get; set; } = LoginMethod.NoSteam;
     public IDisposable? AuthDisposable { get; set; }
     public uint SteamAppId { get; set; } = 70;
+    public string? SteamUsername { get; set; }
+    public ulong? SteamId { get; set; }
 }

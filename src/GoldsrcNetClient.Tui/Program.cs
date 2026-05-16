@@ -19,7 +19,8 @@ public static class Program
         configStore.Load();
 
         ConnectionManager connManager = new ConnectionManager();
-        SettingsView settingsView = new SettingsView(appData);
+        UserInfoStore userInfoStore = new UserInfoStore();
+        SettingsView settingsView = new SettingsView(appData, userInfoStore);
         ConnectionView connectionView = new ConnectionView(appData, connManager, configStore, settingsView);
         ConsoleView consoleView = new ConsoleView(connManager);
 
@@ -51,7 +52,11 @@ public static class Program
             if (e.NewValue == settingsView)
                 settingsView.FocusFirstField();
             else if (e.NewValue != null)
+            {
                 settingsView.ApplyUserInfo();
+                connectionView.SyncUserInfoFromSettings();
+                connectionView.UpdateSteamInfo();
+            }
         };
 
         settingsView.LoggedIn += () =>

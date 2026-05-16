@@ -119,6 +119,23 @@ public sealed class ConnectionManager : IDisposable
                 SetState(ConnectionState.Connected);
             }
         }, TaskContinuationOptions.NotOnFaulted);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _connection.Connected.WaitAsync(TimeSpan.FromSeconds(10), token);
+            }
+            catch
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    Emit("Connection timed out (no response from server)");
+                    _cts?.Cancel();
+                    SetState(ConnectionState.Disconnected);
+                }
+            }
+        }, token);
     }
 
     public async Task DisconnectAsync()

@@ -34,6 +34,7 @@ public sealed class ConnectionView : View
     private readonly Button _upBtn;
     private readonly Button _downBtn;
     private readonly Label _statusLbl;
+    private readonly Label _steamInfoLbl;
     private int _selectedServerIdx = -1;
     private bool _autoScroll = true;
 
@@ -83,10 +84,12 @@ public sealed class ConnectionView : View
 
         Add(_serverFrame, connFrame);
 
+        _steamInfoLbl = new Label { Text = "", X = 38, Y = 0, Width = Dim.Fill() };
+
         _outputFrame = new FrameView
         {
             Title = "Server Output",
-            X = 38, Y = 1, Width = Dim.Fill(), Height = Dim.Fill(17)
+            X = 38, Y = 2, Width = Dim.Fill(), Height = Dim.Fill(17)
         };
         _outputTv = new TextView
         {
@@ -94,7 +97,7 @@ public sealed class ConnectionView : View
             ReadOnly = true
         };
         _outputFrame.Add(_outputTv);
-        Add(_outputFrame);
+        Add(_steamInfoLbl, _outputFrame);
 
         _userInfoFrame = new FrameView
         {
@@ -102,6 +105,8 @@ public sealed class ConnectionView : View
             X = 38, Y = Pos.AnchorEnd(15), Width = Dim.Fill(), Height = 12
         };
         BuildUserInfoEditor();
+        SyncUserInfoFromSettings();
+        UpdateSteamInfo();
         Add(_userInfoFrame);
 
         View inputFrame = new View
@@ -188,6 +193,30 @@ public sealed class ConnectionView : View
             }
         };
         _userInfoFrame.Add(saveBtn);
+    }
+
+    public void SyncUserInfoFromSettings()
+    {
+        string userInfo = _appData.UserInfo;
+        string[] parts = userInfo.Split('\\');
+        for (int i = 1; i + 1 < parts.Length; i += 2)
+        {
+            if (_userInfoFields.TryGetValue(parts[i], out TextField? tf))
+                tf.Text = parts[i + 1];
+        }
+    }
+
+    public void UpdateSteamInfo()
+    {
+        if (_appData.LoginMethod != LoginMethod.NoSteam && _appData.SteamUsername != null)
+        {
+            _steamInfoLbl.Text = $"Steam: {_appData.SteamUsername}" +
+                                 (_appData.SteamId.HasValue ? $" ({_appData.SteamId.Value})" : "");
+        }
+        else
+        {
+            _steamInfoLbl.Text = "Steam: Not logged in";
+        }
     }
 
     private void RefreshUserInfoFields()
@@ -349,11 +378,15 @@ public sealed class ConnectionView : View
                 _ => ""
             };
             _connectBtn.Text = state == ConnectionState.Disconnected ? "Connect" : "Disconnect";
+            _connectBtn.Enabled = state != ConnectionState.Connecting;
+
+            if (state == ConnectionState.Disconnected ||
+                state == ConnectionState.Connected ||
+                state == ConnectionState.Reconnecting)
+                UpdateSteamInfo();
 
             if (state == ConnectionState.Connected)
-            {
                 RefreshUserInfoFields();
-            }
         }
     }
 

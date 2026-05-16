@@ -1,9 +1,9 @@
-using System.Buffers.Binary;
-using System.Collections.Concurrent;
 using GoldsrcNetClient.Core.Network;
 using SteamKit2;
 using SteamKit2.Authentication;
 using SteamKit2.Internal;
+using System.Buffers.Binary;
+using System.Collections.Concurrent;
 
 namespace GoldsrcNetClient.SteamProvider;
 
@@ -32,6 +32,12 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
 
     /// <summary>The last error message if login or auth failed.</summary>
     public string? LastError { get; private set; }
+
+    /// <summary>Steam account name obtained after login.</summary>
+    public string? SteamUsername { get; private set; }
+
+    /// <summary>SteamID (64-bit) obtained after login.</summary>
+    public ulong? SteamId => _client.SteamID is { } sid ? (ulong)sid : null;
 
     /// <summary>
     /// Initializes the SteamKit2 provider for the given AppId.
@@ -164,6 +170,7 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
                 if (logon.Result == EResult.OK)
                 {
                     _isLoggedOn = true;
+                    SteamUsername = _loginResult?.AccountName;
                 }
                 else
                 {
