@@ -40,11 +40,14 @@ public sealed class ConnectionManager : IDisposable
         if (_state == newState) return;
         _state = newState;
         _stateQueue.Enqueue(newState);
+        GlobalLog.Write($"[{DateTime.Now:HH:mm:ss}] State: {newState}");
     }
 
     private void Emit(string message)
     {
-        _outputQueue.Enqueue($"[{DateTime.Now:HH:mm:ss}] {message}");
+        var entry = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        _outputQueue.Enqueue(entry);
+        GlobalLog.Write(entry);
     }
 
     public async Task ConnectAsync(ServerConfig config, ISteamAuthProvider? authProvider, string userInfo)
@@ -76,8 +79,10 @@ public sealed class ConnectionManager : IDisposable
         var tuiHandler = new TuiMessageHandler(this);
         _gameHandler.Next = tuiHandler;
 
-        var logger = NullLogger<GoldsrcConnection>.Instance;
-        _connection = new GoldsrcConnection(logger, _authProvider ?? new NoSteamAuthProvider(), _gameHandler);
+        var logger = new GlobalLogger<GoldsrcConnection>();
+        var resolvedProvider = _authProvider ?? new NoSteamAuthProvider();
+        Emit($"Auth: {resolvedProvider.GetType().Name} (IsAvailable={resolvedProvider.IsAvailable})");
+        _connection = new GoldsrcConnection(logger, resolvedProvider, _gameHandler);
         _connection.UserInfo = userInfo;
 
         _connection.OnServerInfo += (conn, info) =>

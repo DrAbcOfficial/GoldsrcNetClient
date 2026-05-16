@@ -43,17 +43,13 @@ public sealed class SettingsView : View
         Width = Dim.Fill();
         Height = Dim.Fill();
 
-        View userInfoFrame = new View
-        {
-            X = 1, Y = 0, Width = 40, Height = 13
-        };
-        userInfoFrame.Add(new Label { Text = "── User Info ──", X = 0, Y = 0 });
+        Add(new Label { Text = "── User Info ──", X = 1, Y = 0 });
 
         void AddField(string label, int y, out Label lbl, out TextField tf, string value)
         {
             lbl = new Label { Text = label, X = 1, Y = y + 1 };
             tf = new TextField { Text = value, X = 16, Y = y + 1, Width = 22 };
-            userInfoFrame.Add(lbl, tf);
+            Add(lbl, tf);
         }
 
         AddField("name:", 0, out _, out _nameTf, "GoldsrcNetClient");
@@ -62,7 +58,6 @@ public sealed class SettingsView : View
         AddField("bottomcolor:", 3, out _, out _bottomColorTf, "0");
         AddField("rate:", 4, out _, out _rateTf, "20000");
         AddField("cl_updaterate:", 5, out _, out _updaterateTf, "60");
-        Add(userInfoFrame);
 
         FrameView loginFrame = new FrameView
         {

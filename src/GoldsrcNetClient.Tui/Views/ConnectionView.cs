@@ -285,8 +285,12 @@ public sealed class ConnectionView : View
 
         _settingsView.ApplyUserInfo();
 
-        ISteamAuthProvider? authProvider = _appData.AuthProvider;
-        if (_appData.LoginMethod == LoginMethod.SteamApi)
+        ISteamAuthProvider? authProvider = _appData.LoginMethod switch
+        {
+            LoginMethod.SteamApi or LoginMethod.SteamKit => _settingsView.GetAuthProvider(_appData.LoginMethod),
+            _ => null
+        };
+        if (_appData.LoginMethod == LoginMethod.SteamApi && authProvider == null)
         {
             SteamNetAuthProvider netAuth = new SteamNetAuthProvider(_appData.SteamAppId);
             if (netAuth.IsAvailable)
@@ -299,6 +303,11 @@ public sealed class ConnectionView : View
             {
                 netAuth.Dispose();
             }
+        }
+        if (_appData.LoginMethod != LoginMethod.NoSteam && authProvider == null)
+        {
+            _statusLbl.Text = "Auth provider not ready. Complete Steam login first.";
+            return;
         }
 
         _connectBtn.Enabled = false;

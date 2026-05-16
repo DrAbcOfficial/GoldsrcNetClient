@@ -12,6 +12,7 @@ public static class Program
     {
         IApplication app = Application.Create();
         app.Init();
+        AppHolder.App = app;
 
         AppData appData = new AppData();
         ServerConfigStore configStore = new ServerConfigStore();
@@ -20,12 +21,7 @@ public static class Program
         ConnectionManager connManager = new ConnectionManager();
         SettingsView settingsView = new SettingsView(appData);
         ConnectionView connectionView = new ConnectionView(appData, connManager, configStore, settingsView);
-        settingsView.LoggedIn += () =>
-        {
-            settingsView.ApplyUserInfo();
-            settingsView.Visible = false;
-            connectionView.Visible = true;
-        };
+        ConsoleView consoleView = new ConsoleView(connManager);
 
         Window window = new Window
         {
@@ -34,44 +30,37 @@ public static class Program
             Height = Dim.Fill()
         };
 
-        View mainView = new View
+        settingsView.Title = "Settings";
+        connectionView.Title = "Connection";
+        consoleView.Title = "Console";
+
+        Tabs tabs = new()
         {
+            X = 0, Y = 0,
             Width = Dim.Fill(),
             Height = Dim.Fill()
         };
 
-        settingsView.Visible = true;
-        connectionView.Visible = false;
+        tabs.Add(settingsView);
+        tabs.Add(connectionView);
+        tabs.Add(consoleView);
+        tabs.Value = settingsView;
 
-        View tabBar = new View
+        tabs.ValueChanged += (s, e) =>
         {
-            X = 0, Y = 0, Width = Dim.Fill(), Height = 2
+            if (e.NewValue == settingsView)
+                settingsView.FocusFirstField();
+            else if (e.NewValue != null)
+                settingsView.ApplyUserInfo();
         };
 
-        Button settingsTabBtn = new Button { Text = "_Settings", X = 1, Y = 0 };
-        Button connectionTabBtn = new Button { Text = "_Connection", X = Pos.Right(settingsTabBtn) + 1, Y = 0 };
-
-        settingsTabBtn.Accepting += (s, e) =>
-        {
-            settingsView.Visible = true;
-            connectionView.Visible = false;
-            settingsView.FocusFirstField();
-        };
-        connectionTabBtn.Accepting += (s, e) =>
+        settingsView.LoggedIn += () =>
         {
             settingsView.ApplyUserInfo();
-            settingsView.Visible = false;
-            connectionView.Visible = true;
+            tabs.Value = connectionView;
         };
 
-        tabBar.Add(settingsTabBtn, connectionTabBtn);
-
-        mainView.Add(settingsView);
-        mainView.Add(connectionView);
-        window.Add(tabBar);
-        window.Add(mainView);
-
-        AppHolder.App = app;
+        window.Add(tabs);
 
         app.Run(window);
 
