@@ -43,8 +43,8 @@ public sealed class ConsoleView : View
         {
             app.AddTimeout(TimeSpan.FromMilliseconds(100), () =>
             {
-                FlushLog();
-                UpdateStatus();
+                try { FlushLog(); } catch { }
+                try { UpdateStatus(); } catch { }
                 return true;
             });
         }
@@ -52,12 +52,20 @@ public sealed class ConsoleView : View
 
     private void FlushLog()
     {
+        var sb = new System.Text.StringBuilder();
         while (GlobalLog.TryRead(out string? entry))
         {
             if (entry != null)
-                _logTv.Text += entry + "\n";
+                sb.Append(entry).Append('\n');
         }
-        _logTv.MoveEnd();
+        if (sb.Length > 0)
+        {
+            _logTv.Text += sb.ToString();
+            const int maxLen = 100000;
+            if (_logTv.Text.Length > maxLen)
+                _logTv.Text = _logTv.Text[^maxLen..];
+            _logTv.MoveEnd();
+        }
     }
 
     private void UpdateStatus()

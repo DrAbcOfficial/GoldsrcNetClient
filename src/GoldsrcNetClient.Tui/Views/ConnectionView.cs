@@ -144,8 +144,8 @@ public sealed class ConnectionView : View
         {
             app.AddTimeout(TimeSpan.FromMilliseconds(50), () =>
             {
-                FlushOutput();
-                FlushState();
+                try { FlushOutput(); } catch { }
+                try { FlushState(); } catch { }
                 return true;
             });
         }
@@ -315,19 +315,24 @@ public sealed class ConnectionView : View
 
         await _connManager.ConnectAsync(configs[_selectedServerIdx], authProvider, _appData.UserInfo);
         RefreshUserInfoFields();
-        _connectBtn.Enabled = true;
     }
 
     private void FlushOutput()
     {
+        var sb = new System.Text.StringBuilder();
         while (_connManager.TryDequeueOutput(out string? msg))
         {
             if (msg == null) continue;
-            _outputTv.Text += msg + "\n";
+            sb.Append(msg).Append('\n');
         }
-        if (_autoScroll)
+        if (sb.Length > 0)
         {
-            _outputTv.MoveEnd();
+            _outputTv.Text += sb.ToString();
+            const int maxLen = 50000;
+            if (_outputTv.Text.Length > maxLen)
+                _outputTv.Text = _outputTv.Text[^maxLen..];
+            if (_autoScroll)
+                _outputTv.MoveEnd();
         }
     }
 
