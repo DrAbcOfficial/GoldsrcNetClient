@@ -1,6 +1,6 @@
-using System.Text;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Protocol;
+using System.Text;
 
 namespace GoldsrcNetClient.Core.Game;
 

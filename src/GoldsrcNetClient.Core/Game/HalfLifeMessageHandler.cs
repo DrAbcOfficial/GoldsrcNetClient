@@ -153,36 +153,36 @@ public class HalfLifeMessageHandler : GameMessageHandler
     {
         switch (name)
         {
-            case "CurWeapon":     ParseCurWeapon(reader); return true;
-            case "Damage":        ParseDamage(reader); return true;
-            case "DeathMsg":      ParseDeathMsg(reader); return true;
-            case "Health":        ParseHealth(reader); return true;
-            case "Battery":       ParseBattery(reader); return true;
-            case "AmmoX":         ParseAmmoX(reader); return true;
-            case "AmmoPickup":    ParseAmmoPickup(reader); return true;
-            case "FlashBat":      ParseFlashBat(reader); return true;
-            case "Flashlight":    ParseFlashlight(reader); return true;
-            case "GameMode":      ParseGameMode(reader); return true;
-            case "GameTitle":     ParseGameTitle(reader); return true;
-            case "Geiger":        ParseGeiger(reader); return true;
-            case "HideWeapon":    ParseHideWeapon(reader); return true;
-            case "HudText":       ParseHudText(reader); return true;
-            case "InitHUD":       ParseInitHUD(reader); return true;
-            case "ItemPickup":    ParseItemPickup(reader); return true;
-            case "ScreenFade":    ParseScreenFade(reader); return true;
-            case "ScreenShake":   ParseScreenShake(reader); return true;
-            case "SetFOV":        ParseSetFOV(reader); return true;
-            case "StatusIcon":    ParseStatusIcon(reader); return true;
-            case "TeamInfo":      ParseTeamInfo(reader); return true;
-            case "TextMsg":       ParseTextMsg(reader); return true;
-            case "WeaponList":    ParseWeaponList(reader); return true;
-            case "WeapPickup":    ParseWeapPickup(reader); return true;
-            case "SayText":       ParseSayText(reader); return true;
-            case "Train":         ParseTrain(reader); return true;
-            case "VGUIMenu":      ParseVguiMenu(reader); return true;
-            case "ResetHUD":      ParseResetHUD(reader); return true;
-            case "Concuss":       ParseConcuss(reader); return true;
-            case "HudColor":      ParseHudColor(reader); return true;
+            case "CurWeapon": ParseCurWeapon(reader); return true;
+            case "Damage": ParseDamage(reader); return true;
+            case "DeathMsg": ParseDeathMsg(reader); return true;
+            case "Health": ParseHealth(reader); return true;
+            case "Battery": ParseBattery(reader); return true;
+            case "AmmoX": ParseAmmoX(reader); return true;
+            case "AmmoPickup": ParseAmmoPickup(reader); return true;
+            case "FlashBat": ParseFlashBat(reader); return true;
+            case "Flashlight": ParseFlashlight(reader); return true;
+            case "GameMode": ParseGameMode(reader); return true;
+            case "GameTitle": ParseGameTitle(reader); return true;
+            case "Geiger": ParseGeiger(reader); return true;
+            case "HideWeapon": ParseHideWeapon(reader); return true;
+            case "HudText": ParseHudText(reader); return true;
+            case "InitHUD": ParseInitHUD(reader); return true;
+            case "ItemPickup": ParseItemPickup(reader); return true;
+            case "ScreenFade": ParseScreenFade(reader); return true;
+            case "ScreenShake": ParseScreenShake(reader); return true;
+            case "SetFOV": ParseSetFOV(reader); return true;
+            case "StatusIcon": ParseStatusIcon(reader); return true;
+            case "TeamInfo": ParseTeamInfo(reader); return true;
+            case "TextMsg": ParseTextMsg(reader); return true;
+            case "WeaponList": ParseWeaponList(reader); return true;
+            case "WeapPickup": ParseWeapPickup(reader); return true;
+            case "SayText": ParseSayText(reader); return true;
+            case "Train": ParseTrain(reader); return true;
+            case "VGUIMenu": ParseVguiMenu(reader); return true;
+            case "ResetHUD": ParseResetHUD(reader); return true;
+            case "Concuss": ParseConcuss(reader); return true;
+            case "HudColor": ParseHudColor(reader); return true;
             default: return false;
         }
     }

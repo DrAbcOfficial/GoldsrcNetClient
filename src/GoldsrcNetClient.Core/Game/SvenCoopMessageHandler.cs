@@ -32,15 +32,15 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     {
         switch (name)
         {
-            case "Fog":            ParseFogSc(reader); return true;
-            case "Camera":         ParseScRaw(reader, name); return true;
-            case "CameraMouse":    ParseScRaw(reader, name); return true;
-            case "CbElec":         ParseScRaw(reader, name); return true;
-            case "CreateBlood":    ParseScRaw(reader, name); return true;
-            case "GargSplash":     ParseScRaw(reader, name); return true;
-            case "Gib":            ParseScRaw(reader, name); return true;
-            case "SporeTrail":     ParseScRaw(reader, name); return true;
-            case "ToxicCloud":     ParseScRaw(reader, name); return true;
+            case "Fog": ParseFogSc(reader); return true;
+            case "Camera": ParseScRaw(reader, name); return true;
+            case "CameraMouse": ParseScRaw(reader, name); return true;
+            case "CbElec": ParseScRaw(reader, name); return true;
+            case "CreateBlood": ParseScRaw(reader, name); return true;
+            case "GargSplash": ParseScRaw(reader, name); return true;
+            case "Gib": ParseScRaw(reader, name); return true;
+            case "SporeTrail": ParseScRaw(reader, name); return true;
+            case "ToxicCloud": ParseScRaw(reader, name); return true;
             default: return base.DispatchUserMessage(connection, index, name, reader);
         }
     }

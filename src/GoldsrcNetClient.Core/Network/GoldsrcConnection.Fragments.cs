@@ -1,6 +1,6 @@
-using System.Net;
 using ICSharpCode.SharpZipLib.BZip2;
 using Microsoft.Extensions.Logging;
+using System.Net;
 
 namespace GoldsrcNetClient.Core.Network;
 

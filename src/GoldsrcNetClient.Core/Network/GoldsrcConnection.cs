@@ -1,13 +1,12 @@
+using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Munge;
+using GoldsrcNetClient.Core.Protocol;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using GoldsrcNetClient.Core.Messages;
-using GoldsrcNetClient.Core.Munge;
-using GoldsrcNetClient.Core.Protocol;
-using ICSharpCode.SharpZipLib.BZip2;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace GoldsrcNetClient.Core.Network;
 

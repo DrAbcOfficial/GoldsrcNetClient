@@ -1,4 +1,3 @@
-using GoldsrcNetClient.Core.Delta;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Util;
 

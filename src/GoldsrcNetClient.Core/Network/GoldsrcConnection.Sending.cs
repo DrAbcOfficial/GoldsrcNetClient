@@ -1,9 +1,9 @@
-using System.Net;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Munge;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Util;
 using Microsoft.Extensions.Logging;
+using System.Net;
 
 namespace GoldsrcNetClient.Core.Network;
 

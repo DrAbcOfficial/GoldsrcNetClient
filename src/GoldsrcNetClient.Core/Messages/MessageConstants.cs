@@ -1,5 +1,3 @@
-using GoldsrcNetClient.Core.Protocol;
-
 namespace GoldsrcNetClient.Core.Messages;
 
 /// <summary>

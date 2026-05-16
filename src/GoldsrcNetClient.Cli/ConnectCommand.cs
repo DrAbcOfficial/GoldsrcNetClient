@@ -1,14 +1,14 @@
 using CliFx;
 using CliFx.Binding;
 using CliFx.Infrastructure;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.SteamProvider;
 using Microsoft.Extensions.Logging;
 using QRCoder;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace GoldsrcNetClient.Cli;
 

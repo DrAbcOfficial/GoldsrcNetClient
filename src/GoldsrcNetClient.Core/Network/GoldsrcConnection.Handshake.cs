@@ -1,7 +1,7 @@
-using System.Net;
-using System.Text;
 using GoldsrcNetClient.Core.Protocol;
 using Microsoft.Extensions.Logging;
+using System.Net;
+using System.Text;
 
 namespace GoldsrcNetClient.Core.Network;
 

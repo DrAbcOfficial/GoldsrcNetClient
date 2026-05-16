@@ -1,5 +1,5 @@
-using System.Text;
 using GoldsrcNetClient.Core.Protocol;
+using System.Text;
 
 namespace GoldsrcNetClient.Core.Messages;
 
