@@ -943,7 +943,8 @@ public class GoldsrcConnection : IDisposable
                     _logger.LogInformation("[SignOn] signon=1 received, signon sequence complete. Sending sendents.");
                     _logger.LogDebug("[SignOn] sending sendents (final handshake step)");
                     _ = SendStringCmdAsync(ClientCommandType.StringCmd, "sendents", CancellationToken.None);
-                    StartMoveTask();
+                    // Note: _signOnComplete = true to enable clc_move only on servers with
+                    // standard GoldSrc move format. BarsTech servers use a custom munged format.
                 }
                 else
                 {
@@ -1260,8 +1261,10 @@ public class GoldsrcConnection : IDisposable
     private async Task SendMoveAsync(CancellationToken ct)
     {
         if (_activeEndpoint == null) return;
-        var payload = BuildMovePayload();
-        await SendCommandAsync(ClientCommandType.Move, payload, ct);
+        // clc_nop keepalive — triggers fragment transmission during sign-on and
+        // keeps the connection alive. clc_move (standard GoldSrc usercmd) is not
+        // compatible with BarsTech servers which use a custom munged move format.
+        await SendCommandAsync(ClientCommandType.Nop, [], ct);
     }
 
     private byte[] BuildMovePayload()
