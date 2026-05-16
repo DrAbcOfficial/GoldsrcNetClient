@@ -7,6 +7,7 @@ using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Munge;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Util;
+using ICSharpCode.SharpZipLib.BZip2;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -48,9 +49,25 @@ public class GoldsrcConnection : IDisposable
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IPEndPoint? _activeEndpoint;
     private bool _sentContinueLoading;
-    private bool _sentPrespawn;
     private bool _sentSpawn;
-    private bool _sentBegin;
+    private CancellationTokenSource? _moveCts;
+    private Task? _moveTask;
+
+    /// <summary>
+    /// The current spawn count reported by the server.
+    /// Updated when the server sends a <see cref="ServerMessageType.ResourceRequest"/>.
+    /// </summary>
+    public uint SpawnCount
+    {
+        get => _contexts.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var ctx) ? ctx.SpawnCount : 0;
+        set
+        {
+            if (_contexts.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var ctx))
+                ctx.SpawnCount = value;
+        }
+    }
+
+    private static readonly IPEndPoint DummyEndpoint = new(0, 0);
 
     /// <summary>Delegate for <see cref="OnServerInfo"/> events.</summary>
     /// <param name="conn">The connection that received the server info.</param>
@@ -228,48 +245,184 @@ public class GoldsrcConnection : IDisposable
                 {
                     _logger.LogInformation("[State] -> Connected. Handshake complete.");
                     _connectedTcs.TrySetResult();
+                    StartMoveTask();
                 }
             }
             else if (header == MessageConstants.SplitMarker)
             {
-                _logger.LogWarning($"[Fragment] received split packet header (len={len}), fragment reassembly not yet implemented");
+                _logger.LogWarning($"[Fragment] received OOB split packet (len={len}), reassembly not yet implemented");
             }
             else
             {
                 var ctx = _contexts[ep];
-                uint srcSeq = header & MessageConstants.SequenceMask;
+                uint rawHeader = header;
+                bool isFragment = (rawHeader & MessageConstants.SequenceModeFragment) != 0;
+                bool isCommand = (rawHeader & MessageConstants.SequenceModeCommand) != 0;
+                uint srcSeq = rawHeader & MessageConstants.SequenceMask;
                 uint dstSeq = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
                 offset += 4;
 
                 ctx.DstSequence = srcSeq;
 
                 int payloadLen = len - offset;
-                _logger.LogDebug($"connected packet: srcSeq={srcSeq}, dstSeq={dstSeq}, payload={payloadLen}");
+                _logger.LogDebug($"connected packet: srcSeq={srcSeq}, dstSeq={dstSeq}, isFragment={isFragment}, isCommand={isCommand}, payload={payloadLen}");
                 OnDataPacket?.Invoke(this, data);
-                if (payloadLen > 0)
-                {
-                    byte[] payload = new byte[payloadLen];
-                    Array.Copy(data, offset, payload, 0, payloadLen);
 
-                    bool isCommand = (header & MessageConstants.SequenceModeCommand) != 0;
-                    if (!isCommand && payloadLen == 8 && BitConverter.ToUInt64(payload, 0) == MessageConstants.AckData)
+                if (payloadLen <= 0) continue;
+
+                byte[] payload = new byte[payloadLen];
+                Array.Copy(data, offset, payload, 0, payloadLen);
+
+                if (isFragment && isCommand)
+                {
+                    int hdr = 0;
+                    _logger.LogDebug($"[FragHdr] payloadLen={payloadLen}, firstBytes={BitConverter.ToString(payload, 0, Math.Min(payloadLen, 16))}");
+                    uint stream0FragId = 0;
+                    ushort stream0FragLen = 0;
+                    ushort stream0StartPos = 0;
+                    uint stream1FragId = 0;
+                    ushort stream1FragLen = 0;
+                    ushort stream1StartPos = 0;
+                    bool stream0Active = false;
+                    bool stream1Active = false;
+
+                    for (int i = 0; i < 2; i++)
                     {
-                        _logger.LogDebug($"[Ack] received ack, dstSeq={dstSeq}");
+                        if (hdr >= payloadLen) break;
+                        byte streamFlag = payload[hdr++];
+                        _logger.LogDebug($"[FragHdr] stream[{i}] flag={(int)streamFlag}, hdrPos={hdr - 1}");
+                        if (streamFlag != 0)
+                        {
+                            uint fragId = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(hdr));
+                            hdr += 4;
+                            ushort startPos = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(hdr));
+                            hdr += 2;
+                            ushort fragLen = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(hdr));
+                            hdr += 2;
+                            _logger.LogDebug($"[FragHdr] stream[{i}] fragId=0x{fragId:X8}, startPos={startPos}, fragLen={fragLen}, hdrPos={hdr - 4}");
+
+                            if (i == 0) { stream0Active = true; stream0FragId = fragId; stream0FragLen = fragLen; stream0StartPos = startPos; }
+                            else { stream1Active = true; stream1FragId = fragId; stream1FragLen = fragLen; stream1StartPos = startPos; }
+                        }
+                    }
+
+                    int msgLen = payloadLen - hdr;
+                    if (msgLen <= 0) continue;
+
+                    int reliableLen = msgLen;
+                    int firstFragDataStart = msgLen;
+
+                    // Only consider streams with valid fragment data (fragId != 0 and fragLen > 0)
+                    bool hasStream0Frag = stream0Active && stream0FragLen > 0 && stream0FragId != 0;
+                    bool hasStream1Frag = stream1Active && stream1FragLen > 0 && stream1FragId != 0;
+
+                    if (hasStream0Frag)
+                    {
+                        firstFragDataStart = Math.Min(firstFragDataStart, stream0StartPos);
+                    }
+                    if (hasStream1Frag)
+                    {
+                        firstFragDataStart = Math.Min(firstFragDataStart, stream1StartPos);
+                    }
+                    reliableLen = Math.Min(reliableLen, firstFragDataStart);
+
+                    // Accumulate stream 0 fragment data (normal stream)
+                    if (hasStream0Frag)
+                    {
+                        int fragStart = hdr + stream0StartPos;
+                        int fragLen = Math.Min(stream0FragLen, payloadLen - fragStart);
+                        if (fragLen > 0)
+                        {
+                            byte[] fragChunk = new byte[fragLen];
+                            Array.Copy(payload, fragStart, fragChunk, 0, fragLen);
+                            AccumulateFragment(ctx, stream0FragId, fragChunk, _logger);
+
+                            // Remove fragment data from reliable range if it overlaps
+                            if (stream0StartPos == 0)
+                                reliableLen = 0;
+                        }
+                    }
+
+                    // Accumulate stream 1 fragment data (file stream)
+                    if (hasStream1Frag)
+                    {
+                        int fragStart = hdr + stream1StartPos;
+                        int fragLen = Math.Min(stream1FragLen, payloadLen - fragStart);
+                        if (fragLen > 0)
+                        {
+                            byte[] fragChunk = new byte[fragLen];
+                            Array.Copy(payload, fragStart, fragChunk, 0, fragLen);
+                            AccumulateFragment(ctx, stream1FragId, fragChunk, _logger);
+                        }
+                    }
+
+                    // Process completed fragment messages
+                    byte[]? completedData = TryCompleteFragments(ctx, _logger);
+                    if (completedData != null)
+                    {
+                        _ = SendAckAsync(ep);
+                        _sessions[ep] = ProcessConnected(ep, ref srcSeq, ref dstSeq, completedData, completedData.Length);
                         continue;
                     }
 
-                    if (!isCommand)
+                    // Process reliable portion of this packet
+                    if (reliableLen > 0)
                     {
-                        _logger.LogDebug($"[Munge] UnMunge2 payload len={payloadLen}, seq={(int)(srcSeq & 0xFF)}");
-                        MungeEngine.UnMunge2(payload, payloadLen, (int)(srcSeq & 0xFF));
+                        byte[] msgData = new byte[reliableLen];
+                        Array.Copy(payload, hdr, msgData, 0, reliableLen);
+                        _logger.LogDebug($"[Fragment] parsed {hdr} bytes of headers, {reliableLen} bytes reliable data");
+                        _ = SendAckAsync(ep);
+                        _sessions[ep] = ProcessConnected(ep, ref srcSeq, ref dstSeq, msgData, reliableLen);
                     }
                     else
                     {
-                        _logger.LogDebug($"[Munge] Command packet, skipping UnMunge2 for payload len={payloadLen}");
+                        _logger.LogDebug($"[Fragment] parsed {hdr} bytes of headers, accumulating fragment data only");
+                        _ = SendAckAsync(ep);
                     }
-
-                    _sessions[ep] = ProcessConnected(ep, ref srcSeq, ref dstSeq, payload, payloadLen);
+                    continue;
                 }
+
+                if (isFragment)
+                {
+                    _logger.LogWarning($"[Fragment] unexpected fragment-only packet (no command flag), accumulating {payloadLen} bytes");
+                    ctx.IncomingFragment.AddRange(payload);
+                    _ = SendAckAsync(ep);
+                    continue;
+                }
+
+                // Not a fragment — if we have accumulated fragment data, append current payload as unreliable data
+                byte[] messageData;
+                int messageLen;
+                if (ctx.IncomingFragment.Count > 0)
+                {
+                    _logger.LogDebug($"[Fragment] reassembly complete: {ctx.IncomingFragment.Count} + {payloadLen} = {ctx.IncomingFragment.Count + payloadLen} bytes");
+                    messageData = [.. ctx.IncomingFragment, .. payload];
+                    messageLen = messageData.Length;
+                    ctx.IncomingFragment.Clear();
+                }
+                else
+                {
+                    messageData = payload;
+                    messageLen = payloadLen;
+                }
+
+                if (!isCommand && messageLen == 8 && BitConverter.ToUInt64(messageData, 0) == MessageConstants.AckData)
+                {
+                    _logger.LogDebug($"[Ack] received ack, dstSeq={dstSeq}");
+                    continue;
+                }
+
+                if (!isCommand)
+                {
+                    _logger.LogDebug($"[Munge] UnMunge2 message len={messageLen}, seq={(int)(srcSeq & 0xFF)}");
+                    MungeEngine.UnMunge2(messageData, messageLen, (int)(srcSeq & 0xFF));
+                }
+                else
+                {
+                    _logger.LogDebug($"[Munge] Command packet, skipping UnMunge2 for message len={messageLen}");
+                }
+
+                _sessions[ep] = ProcessConnected(ep, ref srcSeq, ref dstSeq, messageData, messageLen);
             }
         }
     }
@@ -506,14 +659,8 @@ public class GoldsrcConnection : IDisposable
                 if (!_sentContinueLoading)
                 {
                     _sentContinueLoading = true;
-                    _logger.LogDebug("[SignOn] sending continueloading");
-                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "continueloading", CancellationToken.None);
-                }
-                if (!_sentPrespawn)
-                {
-                    _sentPrespawn = true;
-                    _logger.LogDebug("[SignOn] sending prespawn");
-                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "prespawn", CancellationToken.None);
+                    _logger.LogDebug("[SignOn] sending sendres");
+                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "sendres", CancellationToken.None);
                 }
             }
             else if (dataType == (byte)ServerMessageType.DeltaDescription)
@@ -632,13 +779,6 @@ public class GoldsrcConnection : IDisposable
                 ProcessResourceList(ctx, reader);
                 _logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={reader.Offset - listStart}");
                 OnResourceList?.Invoke(this, ctx.Resources);
-
-                if (!_sentContinueLoading)
-                {
-                    _sentContinueLoading = true;
-                    _logger.LogDebug("[SignOn] sending continueloading (from ResourceList)");
-                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "continueloading", CancellationToken.None);
-                }
             }
             else if (dataType == (byte)ServerMessageType.TempEntity)
             {
@@ -725,12 +865,18 @@ public class GoldsrcConnection : IDisposable
                 reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
                 _logger.LogDebug($"[SpawnBaseline] done, totalBits={bitIdx}, newOffset={reader.Offset}");
 
-                if (!_sentSpawn && _sentPrespawn)
+                if (!_sentSpawn && _sentContinueLoading)
                 {
                     _sentSpawn = true;
-                    if (ctx.SpawnCount == 0) ctx.SpawnCount = 1;
-                    var spawnCmd = $"spawn {ctx.SpawnCount} {ctx.PlayerNumber}";
-                    _logger.LogDebug($"[SignOn] sending {spawnCmd}");
+                    uint spawnCount = ctx.SpawnCount;
+                    int rawCrc = (int)ctx.WorldmapCrc;
+                    byte[] crcBytes = BitConverter.GetBytes(rawCrc);
+                    int mungeKey = ~(int)spawnCount;
+                    _logger.LogDebug($"[SignOn] spawn: rawCrc=0x{rawCrc:X8}, mungeKey=0x{mungeKey:X8} (spawnCount={spawnCount})");
+                    MungeEngine.Munge2(crcBytes, 4, mungeKey);
+                    int mungedCrc = BitConverter.ToInt32(crcBytes, 0);
+                    var spawnCmd = $"spawn {spawnCount} {mungedCrc}";
+                    _logger.LogDebug($"[SignOn] sending spawn (spawnCount={spawnCount}, mungedCrc=0x{mungedCrc:X8})");
                     _ = SendStringCmdAsync(ClientCommandType.StringCmd, spawnCmd, CancellationToken.None);
                 }
             }
@@ -779,19 +925,23 @@ public class GoldsrcConnection : IDisposable
                 }
                 _logger.LogDebug($"[ClientData] done, weaponDeltas={weaponCount}");
                 reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
-
-                if (!_sentBegin && _sentSpawn)
-                {
-                    _sentBegin = true;
-                    _logger.LogDebug("[SignOn] sending begin");
-                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "begin", CancellationToken.None);
-                }
             }
             else if (dataType == (byte)ServerMessageType.SignOnNum)
             {
                 if (reader.Offset + 1 > reader.Size) { _logger.LogWarning("[SignOnNum] buffer overflow"); return SessionState.Connected; }
                 byte signOn = reader.Data[reader.Offset++];
                 _logger.LogDebug($"[SignOnNum] value={signOn}");
+                if (signOn == 1)
+                {
+                    _logger.LogInformation("[SignOn] signon=1 received, signon sequence complete. Sending sendents.");
+                    _logger.LogDebug("[SignOn] sending sendents (final handshake step)");
+                    _ = SendStringCmdAsync(ClientCommandType.StringCmd, "sendents", CancellationToken.None);
+                    StartMoveTask();
+                }
+                else
+                {
+                    _logger.LogDebug($"[SignOn] signon={signOn} received (not 1, no action)");
+                }
             }
             else if (dataType == (byte)ServerMessageType.VoiceInit)
             {
@@ -1064,6 +1214,84 @@ public class GoldsrcConnection : IDisposable
         await _socket.SendAsync(new ReadOnlyMemory<byte>(payload), ep, ct);
     }
 
+    private async Task SendAckAsync(IPEndPoint ep)
+    {
+        var ctx = _contexts[ep];
+        uint srcSeq = ctx.SrcSequence++;
+        var ackPacket = new byte[MessageConstants.ConnectedHeadSize];
+        BitConverter.GetBytes(srcSeq | MessageConstants.SequenceModeCommand).CopyTo(ackPacket, 0);
+        BitConverter.GetBytes(ctx.DstSequence & MessageConstants.SequenceMask).CopyTo(ackPacket, 4);
+        _logger.LogDebug($"[SendAck] srcSeq={srcSeq}, dstSeq={ctx.DstSequence}");
+        await _socket.SendAsync(new ReadOnlyMemory<byte>(ackPacket), ep, CancellationToken.None);
+    }
+
+    private void StartMoveTask()
+    {
+        if (_moveCts != null) return;
+        _moveCts = new CancellationTokenSource();
+        var token = _moveCts.Token;
+        _moveTask = Task.Run(async () =>
+        {
+            _logger.LogDebug("[Move] starting move task");
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await SendMoveAsync(token);
+                    await Task.Delay(100, token);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning($"[Move] error: {ex.Message}");
+                }
+            }
+            _logger.LogDebug("[Move] move task stopped");
+        }, token);
+    }
+
+    private async Task SendMoveAsync(CancellationToken ct)
+    {
+        if (_activeEndpoint == null) return;
+        var payload = BuildMovePayload();
+        await SendCommandAsync(ClientCommandType.Move, payload, ct);
+    }
+
+    private static byte[] BuildMovePayload()
+    {
+        var data = new byte[32];
+        int bitIdx = 0;
+        int destSize = data.Length;
+
+        // Number of backup commands
+        BitWriter.WriteBits(1u, 8, data, ref bitIdx, destSize);
+
+        // First (and only) usercmd: delta from nullcmd
+        BitWriter.WriteBits(1u, 1, data, ref bitIdx, destSize); // hasdata = true
+
+        // All fields of usercmd_t in wire format:
+        BitWriter.WriteBits(0u, 9, data, ref bitIdx, destSize);  // lerp_msec
+        BitWriter.WriteBits(0u, 8, data, ref bitIdx, destSize);  // msec
+        BitWriter.WriteBits(0u, 16, data, ref bitIdx, destSize); // viewangles[0] (pitch)
+        BitWriter.WriteBits(0u, 16, data, ref bitIdx, destSize); // viewangles[1] (yaw)
+        BitWriter.WriteBits(0u, 16, data, ref bitIdx, destSize); // viewangles[2] (roll)
+        BitWriter.WriteBits(0u, 12, data, ref bitIdx, destSize); // forwardmove (signed, 0)
+        BitWriter.WriteBits(0u, 12, data, ref bitIdx, destSize); // sidemove (signed, 0)
+        BitWriter.WriteBits(0u, 12, data, ref bitIdx, destSize); // upmove (signed, 0)
+        BitWriter.WriteBits(0u, 16, data, ref bitIdx, destSize); // buttons
+        BitWriter.WriteBits(0u, 8, data, ref bitIdx, destSize);  // impulse
+        BitWriter.WriteBits(0u, 8, data, ref bitIdx, destSize);  // lightlevel
+
+        // Final light level byte (used by server for lighting)
+        int byteSize = bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+        if (byteSize < data.Length) data[byteSize] = 0;
+        byteSize++;
+
+        var result = new byte[byteSize];
+        Array.Copy(data, result, byteSize);
+        return result;
+    }
+
     private static List<byte> MungeBytes(List<byte> data, int seq)
     {
         var arr = data.ToArray();
@@ -1259,7 +1487,71 @@ public class GoldsrcConnection : IDisposable
     /// <summary>Closes the underlying UDP socket and releases all resources.</summary>
     public void Dispose()
     {
+        _moveCts?.Cancel();
+        _moveCts?.Dispose();
         _socket.Dispose();
+    }
+
+    private static void AccumulateFragment(ConnectionContext ctx, uint fragId, byte[] data, ILogger logger)
+    {
+        int count = (int)(fragId & 0xFFFF);
+        int id = (int)((fragId >> 16) & 0xFFFF);
+
+        if (!ctx.FragmentActive || ctx.FragmentTotalCount != count)
+        {
+            ctx.FragmentActive = true;
+            ctx.FragmentTotalCount = count;
+            ctx.FragmentChunks.Clear();
+            logger.LogDebug($"[FragAccum] new message: totalFragments={count}");
+        }
+
+        ctx.FragmentChunks.Add(data);
+        logger.LogDebug($"[FragAccum] stored fragment id={id}/{count}, received={ctx.FragmentChunks.Count}/{ctx.FragmentTotalCount}, size={data.Length}");
+    }
+
+    private static byte[]? TryCompleteFragments(ConnectionContext ctx, ILogger logger)
+    {
+        if (!ctx.FragmentActive || ctx.FragmentChunks.Count < ctx.FragmentTotalCount)
+            return null;
+
+        logger.LogDebug($"[FragAccum] all {ctx.FragmentChunks.Count} fragments received, reassembling...");
+
+        int totalSize = 0;
+        foreach (var c in ctx.FragmentChunks)
+            totalSize += c.Length;
+
+        byte[] assembled = new byte[totalSize];
+        int pos = 0;
+        foreach (var c in ctx.FragmentChunks)
+        {
+            Array.Copy(c, 0, assembled, pos, c.Length);
+            pos += c.Length;
+        }
+
+        ctx.FragmentActive = false;
+        ctx.FragmentTotalCount = 0;
+        ctx.FragmentChunks.Clear();
+
+        if (totalSize > 4 && assembled[0] == 'B' && assembled[1] == 'Z' && assembled[2] == '2' && assembled[3] == 0)
+        {
+            logger.LogDebug($"[BZ2] decompressing {totalSize} bytes of sign-on data...");
+            try
+            {
+                using var msIn = new MemoryStream(assembled, 4, totalSize - 4);
+                using var msOut = new MemoryStream();
+                BZip2.Decompress(msIn, msOut, false);
+                var decompressed = msOut.ToArray();
+                logger.LogDebug($"[BZ2] decompressed to {decompressed.Length} bytes");
+                return decompressed;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning($"[BZ2] decompression failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        return assembled;
     }
 
     private class ConnectionContext
@@ -1279,6 +1571,12 @@ public class GoldsrcConnection : IDisposable
         public bool RequiresGameAuthTicket;
         public uint ServerIp;
         public ushort ServerPort;
+        public List<byte> IncomingFragment = [];
+
+        // Fragment reassembly state
+        public int FragmentTotalCount;
+        public bool FragmentActive;
+        public readonly List<byte[]> FragmentChunks = [];
     }
 }
 

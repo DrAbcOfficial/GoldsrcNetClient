@@ -94,6 +94,8 @@ public sealed class CliServerMessageHandler : IServerMessageHandler
         uint spawnCount = reader.ReadUInt32();
         reader.Offset += 4; // skip unknown second long
 
+        connection.SpawnCount = spawnCount;
+
         FireAndForget(SendResourceListReply(connection));
         if (_debug)
             _console.Output.WriteLine($"[ResourceRequest] spawnCount={spawnCount}, sent empty resource list");

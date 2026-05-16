@@ -207,13 +207,20 @@ public partial class ConnectCommand : ICommand
         try
         {
             using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(TimeoutSeconds)))
-            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(userCts.Token, timeoutCts.Token))
             {
                 if (Debug)
-                    console.Error.WriteLine($"[DEBUG] Connecting with timeout={TimeoutSeconds}s, using linked cancellation token.");
+                    console.Error.WriteLine($"[DEBUG] Connecting with timeout={TimeoutSeconds}s...");
 
-                var connectTask = client.ConnectAsync(Host, Port, linkedCts.Token);
-                var completed = await Task.WhenAny(connectTask, client.Connected);
+                var connectTask = client.ConnectAsync(Host, Port, userCts.Token);
+                var delayTask = Task.Delay(Timeout.Infinite, timeoutCts.Token);
+                var completed = await Task.WhenAny(connectTask, client.Connected, delayTask);
+
+                if (completed == delayTask)
+                {
+                    userCts.Cancel();
+                    console.Error.WriteLine($"Error: Connection timed out after {TimeoutSeconds} seconds.");
+                    return;
+                }
 
                 if (completed == connectTask)
                 {
