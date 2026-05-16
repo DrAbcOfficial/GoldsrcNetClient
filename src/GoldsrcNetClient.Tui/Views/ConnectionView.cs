@@ -314,35 +314,16 @@ public sealed class ConnectionView : View
 
         _settingsView.ApplyUserInfo();
 
-        ISteamAuthProvider? authProvider = _appData.LoginMethod switch
+        switch (_appData.LoginMethod)
         {
-            LoginMethod.SteamApi or LoginMethod.SteamKit => _settingsView.GetAuthProvider(_appData.LoginMethod),
-            _ => null
-        };
-        if (_appData.LoginMethod == LoginMethod.SteamApi && authProvider == null)
-        {
-            SteamNetAuthProvider netAuth = new SteamNetAuthProvider(_appData.SteamAppId);
-            if (netAuth.IsAvailable)
-            {
-                _appData.AuthDisposable?.Dispose();
-                _appData.AuthDisposable = netAuth;
-                authProvider = netAuth;
-            }
-            else
-            {
-                netAuth.Dispose();
-            }
-        }
-        if (_appData.LoginMethod != LoginMethod.NoSteam && authProvider == null)
-        {
-            _statusLbl.Text = "Auth provider not ready. Complete Steam login first.";
-            return;
+            case LoginMethod.SteamApi: _appData.AuthProvider ??= new SteamNetAuthProvider(); break;
+            case LoginMethod.SteamKit: if (_appData.AuthProvider == null) _statusLbl.Text = "Auth provider is NULL"; return;
         }
 
         _connectBtn.Enabled = false;
         _statusLbl.Text = "Connecting...";
 
-        await _connManager.ConnectAsync(configs[_selectedServerIdx], authProvider, _appData.UserInfo);
+        await _connManager.ConnectAsync(configs[_selectedServerIdx], _appData.AuthProvider, _appData.UserInfo);
         RefreshUserInfoFields();
     }
 

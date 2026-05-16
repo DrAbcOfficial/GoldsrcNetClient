@@ -96,7 +96,7 @@ public sealed class ConnectionManager : IDisposable
             try
             {
                 Emit($"Connecting to {config.Host}:{config.Port}...");
-                await _connection.ConnectAsync(config.Host, config.Port, token);
+                await _connection.ConnectAsync(config.AppId, config.Host, config.Port, token);
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)

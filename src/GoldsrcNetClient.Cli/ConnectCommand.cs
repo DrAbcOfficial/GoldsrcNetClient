@@ -63,7 +63,7 @@ public partial class ConnectCommand : ICommand
         if (UseSteam)
         {
             console.Output.WriteLine($"Initializing Steam (AppID {AppId})...");
-            var steamAuth = new SteamNetAuthProvider(AppId);
+            var steamAuth = new SteamNetAuthProvider();
             authDisposable = steamAuth;
 
             if (steamAuth.IsAvailable)
@@ -82,7 +82,7 @@ public partial class ConnectCommand : ICommand
         else if (UseSteamKit)
         {
             console.Output.WriteLine($"Initializing SteamKit2 (AppID {AppId})...");
-            var steamKitAuth = new SteamKitAuthProvider(AppId);
+            var steamKitAuth = new SteamKitAuthProvider();
             authDisposable = steamKitAuth;
 
             try
@@ -218,7 +218,7 @@ public partial class ConnectCommand : ICommand
                 if (Debug)
                     console.Error.WriteLine($"[DEBUG] Connecting with timeout={TimeoutSeconds}s...");
 
-                var connectTask = client.ConnectAsync(Host, Port, userCts.Token);
+                var connectTask = client.ConnectAsync(AppId, Host, Port, userCts.Token);
                 var delayTask = Task.Delay(Timeout.Infinite, timeoutCts.Token);
                 var completed = await Task.WhenAny(connectTask, client.Connected, delayTask);
 

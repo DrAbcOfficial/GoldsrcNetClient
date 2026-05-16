@@ -25,7 +25,6 @@ public sealed class SettingsView : View
     private readonly TextView _qrText;
     private readonly Button _qrBtn;
     private readonly Label _qrStatus;
-    private SteamKitAuthProvider? _steamKitAuth;
     private bool _qrLoggedIn;
 
     public event Action? LoggedIn;
@@ -124,7 +123,13 @@ public sealed class SettingsView : View
 
     private void StartSteamKitLogin()
     {
-        if (_qrLoggedIn) return;
+        if (_qrLoggedIn) 
+            return;
+
+        var oldProvider = _appData.AuthProvider as SteamBaseAuthProvider;
+        oldProvider?.Dispose();
+
+        SteamKitAuthProvider authProvider = new();
 
         uint appId = DefaultAppId;
 
@@ -132,34 +137,28 @@ public sealed class SettingsView : View
         _qrStatus.Text = "Connecting to Steam...";
         _qrText.Text = "";
 
-        _appData.AuthDisposable?.Dispose();
-        _steamKitAuth = new SteamKitAuthProvider(appId);
-        _appData.AuthDisposable = _steamKitAuth;
-
         Task.Run(async () =>
         {
             try
             {
-                await _steamKitAuth.ConnectAsync();
-
+                await authProvider.ConnectAsync();
                 _qrStatus.Text = "Generating QR code...";
 
-                string qrUrl = await _steamKitAuth.BeginQrLoginAsync();
+                string qrUrl = await authProvider.BeginQrLoginAsync();
                 string qrString = RenderQrCode(qrUrl);
 
                 _qrText.Text = qrString;
                 _qrStatus.Text = "Scan the QR code with the Steam mobile app";
 
-                await _steamKitAuth.WaitForLoginAsync();
+                await authProvider.WaitForLoginAsync();
 
                 _qrStatus.Text = "Logged in!";
                 _qrBtn.Text = "Logged In";
                 _qrLoggedIn = true;
-                _appData.AuthProvider = _steamKitAuth;
+                _appData.AuthProvider = authProvider;
                 _appData.LoginMethod = LoginMethod.SteamKit;
-                _appData.SteamAppId = appId;
-                _appData.SteamUsername = _steamKitAuth.SteamUsername;
-                _appData.SteamId = _steamKitAuth.SteamId;
+                _appData.SteamUsername = authProvider.SteamUsername;
+                _appData.SteamId = authProvider.SteamId;
             }
             catch (Exception ex)
             {
@@ -191,30 +190,6 @@ public sealed class SettingsView : View
         sb.Append("\\cl_updaterate\\").Append(data.ClUpdaterate);
         sb.Append("\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\hltv\\0");
         _appData.UserInfo = sb.ToString();
-    }
-
-    public ISteamAuthProvider? GetAuthProvider(LoginMethod method)
-    {
-        switch (method)
-        {
-            case LoginMethod.NoSteam:
-                return null;
-            case LoginMethod.SteamApi:
-            {
-                SteamNetAuthProvider auth = new SteamNetAuthProvider(DefaultAppId);
-                _appData.AuthDisposable = auth;
-                if (auth.IsAvailable)
-                    return auth;
-                auth.Dispose();
-                return null;
-            }
-            case LoginMethod.SteamKit:
-                if (_steamKitAuth == null || !_steamKitAuth.IsAvailable)
-                    return null;
-                return _steamKitAuth;
-            default:
-                return null;
-        }
     }
 
     private static string RenderQrCode(string url)

@@ -210,10 +210,11 @@ public partial class GoldsrcConnection : IDisposable
     /// This method blocks until the <paramref name="ct"/> cancellation token is triggered.
     /// Use <see cref="Connected"/> to await handshake completion.
     /// </summary>
+    /// <param name="appId">Server appId.</param>
     /// <param name="host">Server hostname or IP address.</param>
     /// <param name="port">Server UDP port (default 27015).</param>
     /// <param name="ct">Cancellation token to stop the receive loop.</param>
-    public async Task ConnectAsync(string host, int port = 27015, CancellationToken ct = default)
+    public async Task ConnectAsync(uint appId, string host, int port = 27015, CancellationToken ct = default)
     {
         Logger.LogDebug($"[State] Begin -> resolving {host}:{port}");
         var addresses = await Dns.GetHostAddressesAsync(host, ct);
@@ -249,7 +250,7 @@ public partial class GoldsrcConnection : IDisposable
             {
                 var payload = Encoding.UTF8.GetString(data, offset, len - offset);
                 Logger.LogDebug($"connectionless: {payload[..Math.Min(payload.Length, 200)]}");
-                _sessions[ep] = await ProcessConnectionless(ep, payload, ct);
+                _sessions[ep] = await ProcessConnectionless(ep, payload, appId, ct);
                 if (_sessions[ep] == SessionState.Connected)
                 {
                     Logger.LogInformation("[State] -> Connected. Handshake complete.");

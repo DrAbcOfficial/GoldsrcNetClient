@@ -7,7 +7,7 @@ namespace GoldsrcNetClient.Core.Network;
 
 public partial class GoldsrcConnection
 {
-    private async Task<SessionState> ProcessConnectionless(IPEndPoint ep, string payload, CancellationToken ct)
+    private async Task<SessionState> ProcessConnectionless(IPEndPoint ep, string payload, uint appId, CancellationToken ct)
     {
         var state = _sessions[ep];
         var ctx = _contexts[ep];
@@ -34,7 +34,7 @@ public partial class GoldsrcConnection
                 ctx.Challenge = Encoding.UTF8.GetBytes(challengeToken);
 
                 Logger.LogDebug($"[Challenge] parsed: challenge={challengeToken}, authProto={ctx.AuthProtocol}");
-                var data = BuildConnectPacket(ep);
+                var data = BuildConnectPacket(ep, appId);
                 Logger.LogDebug($"[Connect] sending connect packet, len={data.Length}");
                 await _socket.SendAsync(new ReadOnlyMemory<byte>(data), ep, ct);
                 return SessionState.Connect0;
@@ -46,7 +46,7 @@ public partial class GoldsrcConnection
                 Logger.LogDebug($"[Challenge] Format legacy: challenge={challengeToken}, parts={parts.Length}");
 
                 ctx.Challenge = Encoding.UTF8.GetBytes(challengeToken);
-                var data = BuildConnectPacket(ep);
+                var data = BuildConnectPacket(ep, appId);
                 Logger.LogDebug($"[Connect] sending connect packet (legacy), len={data.Length}");
                 await _socket.SendAsync(new ReadOnlyMemory<byte>(data), ep, ct);
                 return SessionState.Connect0;
@@ -83,7 +83,7 @@ public partial class GoldsrcConnection
         return state;
     }
 
-    private byte[] BuildConnectPacket(IPEndPoint ep)
+    private byte[] BuildConnectPacket(IPEndPoint ep, uint appId)
     {
         var ctx = _contexts[ep];
         var challengeStr = Encoding.UTF8.GetString(ctx.Challenge);
@@ -96,7 +96,7 @@ public partial class GoldsrcConnection
 
         if (useGameTicket)
         {
-            ticketBytes = _authProvider.GetGameAuthBytes(ctx.ServerSteamId, ctx.ServerIp, ctx.ServerPort);
+            ticketBytes = _authProvider.GetGameAuthBytes(appId, ctx.ServerSteamId, ctx.ServerIp, ctx.ServerPort);
             Logger.LogDebug($"[Connect] using game auth ticket: serverSteamId={ctx.ServerSteamId}, len={ticketBytes.Length}");
             rawValue = "steam";
             cdKeyHash = "12345678901234567890123456789012";

@@ -1,4 +1,3 @@
-using GoldsrcNetClient.Core.Network;
 using SteamKit2;
 using SteamKit2.Authentication;
 using SteamKit2.Internal;
@@ -11,9 +10,8 @@ namespace GoldsrcNetClient.SteamProvider;
 /// Steam authentication provider using SteamKit2 (pure managed, no native Steam client required).
 /// Supports QR code-based login via the Steam mobile app.
 /// </summary>
-public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
+public sealed class SteamKitAuthProvider : SteamBaseAuthProvider
 {
-    private readonly uint _appId;
     private readonly SteamClient _client;
     private readonly SteamUser _steamUser;
     private readonly SteamApps _steamApps;
@@ -23,12 +21,13 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
     private Task? _callbackLoop;
     private QrAuthSession? _qrSession;
     private AuthPollResult? _loginResult;
+    private byte[]? _ticketData;
     private bool _isLoggedOn;
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<EResult> _logonTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <inheritdoc />
-    public bool IsAvailable => _isLoggedOn;
+    public override bool IsAvailable { get => _isLoggedOn; set => _isLoggedOn = value; }
 
     /// <summary>The last error message if login or auth failed.</summary>
     public string? LastError { get; private set; }
@@ -42,10 +41,8 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
     /// <summary>
     /// Initializes the SteamKit2 provider for the given AppId.
     /// </summary>
-    /// <param name="appId">Steam AppId to authenticate with. Default 70 (Half-Life).</param>
-    public SteamKitAuthProvider(uint appId = 70)
+    public SteamKitAuthProvider()
     {
-        _appId = appId;
         var config = SteamConfiguration.Create(b => b.WithDirectoryFetch(true));
         _client = new SteamClient(config);
         _steamUser = _client.GetHandler<SteamUser>()!;
@@ -53,31 +50,32 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
     }
 
     /// <inheritdoc />
-    public byte GetAuthProtocol() => 3;
+    public override byte GetAuthProtocol() => 3;
 
     /// <inheritdoc />
-    public string GetRawAuthData()
+    public override string GetRawAuthData()
     {
         if (!_isLoggedOn)
             return "steam";
-        return Convert.ToHexString(GetGameAuthBytesInternal() ?? []);
+        return Convert.ToHexString(_ticketData ?? []);
     }
 
     /// <inheritdoc />
-    public byte[] GetRawAuthBytes()
+    public override byte[] GetRawAuthBytes()
     {
         if (!_isLoggedOn)
             return System.Text.Encoding.UTF8.GetBytes("steam");
-        return GetGameAuthBytesInternal() ?? System.Text.Encoding.UTF8.GetBytes("steam");
+        return _ticketData ?? [];
     }
 
     /// <inheritdoc />
-    public byte[] GetGameAuthBytes(ulong serverSteamId, uint serverIp, ushort serverPort)
+    public override byte[] GetGameAuthBytes(uint appId, ulong serverSteamId, uint serverIp, ushort serverPort)
     {
         if (!_isLoggedOn)
             return GetRawAuthBytes();
 
-        var result = GetGameAuthBytesInternal();
+        var result = GetGameAuthBytesInternal(appId);
+        _ticketData = result;
         return result ?? GetRawAuthBytes();
     }
 
@@ -192,7 +190,7 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
         return Task.CompletedTask;
     }
 
-    private byte[]? GetGameAuthBytesInternal()
+    private byte[]? GetGameAuthBytesInternal(uint appid)
     {
         if (!_isLoggedOn)
             return null;
@@ -200,7 +198,7 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
         if (!_gameConnectTokens.TryDequeue(out var token))
             return null;
 
-        var ticketTask = _steamApps.GetAppOwnershipTicket(_appId).ToTask();
+        var ticketTask = _steamApps.GetAppOwnershipTicket(appid).ToTask();
         ticketTask.Wait(TimeSpan.FromSeconds(30));
         if (!ticketTask.IsCompletedSuccessfully)
             return null;
@@ -228,7 +226,7 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
     }
 
     /// <inheritdoc />
-    public void Dispose()
+    public override void Dispose()
     {
         _isLoggedOn = false;
         _cts.Cancel();

@@ -70,7 +70,7 @@ public static class Program
         app.Run(window);
 
         connManager.Dispose();
-        appData.AuthDisposable?.Dispose();
+        (appData.AuthProvider as IDisposable)?.Dispose();
         app.Dispose();
     }
 }

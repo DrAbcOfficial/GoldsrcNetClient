@@ -1,4 +1,3 @@
-using GoldsrcNetClient.Core.Network;
 using Steamworks;
 
 namespace GoldsrcNetClient.SteamProvider;
@@ -7,48 +6,21 @@ namespace GoldsrcNetClient.SteamProvider;
 /// Steam authentication provider using Facepunch Steamworks.NET.
 /// Requires the Steam client to be running and the user to own the specified AppId.
 /// </summary>
-public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
+public sealed class SteamNetAuthProvider : SteamBaseAuthProvider
 {
     private byte[] _ticketData = [];
 
     /// <summary>Whether the Steam provider initialized successfully.</summary>
-    public bool IsAvailable { get; private set; }
+    public override bool IsAvailable { get; set; } = true;
 
     /// <summary>The last error message if initialization or auth failed.</summary>
     public string? LastError { get; private set; }
 
-    /// <summary>
-    /// Initializes the Steamworks.NET provider for the given AppId.
-    /// </summary>
-    /// <param name="appId">Steam AppId to authenticate with. Default 70 (Half-Life).</param>
-    public SteamNetAuthProvider(uint appId = 70)
-    {
-        try
-        {
-            Environment.SetEnvironmentVariable("SteamAppId", appId.ToString());
-            if (!SteamAPI.Init())
-            {
-                LastError = $"SteamAPI.Init() returned false. Ensure Steam client is running and you own AppID {appId}.";
-                return;
-            }
-
-            IsAvailable = true;
-        }
-        catch (DllNotFoundException ex)
-        {
-            LastError = $"Native Steam library not found: {ex.Message}. Ensure steam_api64.dll is present in the output directory.";
-        }
-        catch (Exception ex)
-        {
-            LastError = $"Steam init exception: {ex.GetType().Name}: {ex.Message}";
-        }
-    }
+    /// <inheritdoc />
+    public override byte GetAuthProtocol() => 3;
 
     /// <inheritdoc />
-    public byte GetAuthProtocol() => 3;
-
-    /// <inheritdoc />
-    public string GetRawAuthData()
+    public override string GetRawAuthData()
     {
         if (_ticketData.Length > 0)
             return Convert.ToHexString(_ticketData).ToLowerInvariant();
@@ -57,7 +29,7 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
     }
 
     /// <inheritdoc />
-    public byte[] GetRawAuthBytes()
+    public override byte[] GetRawAuthBytes()
     {
         if (_ticketData.Length > 0)
             return _ticketData;
@@ -66,13 +38,17 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
     }
 
     /// <inheritdoc />
-    public byte[] GetGameAuthBytes(ulong serverSteamId, uint serverIp, ushort serverPort)
+    public override byte[] GetGameAuthBytes(uint appId, ulong serverSteamId, uint serverIp, ushort serverPort)
     {
-        if (!IsAvailable)
-            return GetRawAuthBytes();
-
         try
         {
+            Environment.SetEnvironmentVariable("SteamAppId", appId.ToString());
+            if (!SteamAPI.Init())
+            {
+                LastError = $"SteamAPI.Init() returned false. Ensure Steam client is running and you own AppID {appId}.";
+                IsAvailable = false;
+                return [];
+            }
             var blob = new byte[4096];
             var steamId = new CSteamID(serverSteamId);
             int resultLen = SteamUser.InitiateGameConnection_DEPRECATED(
@@ -86,16 +62,21 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
 
             LastError = $"InitiateGameConnection returned {resultLen} (expected > 0).";
         }
+        catch (DllNotFoundException ex)
+        {
+            LastError = $"Native Steam library not found: {ex.Message}. Ensure steam_api64.dll is present in the output directory.";
+        }
         catch (Exception ex)
         {
             LastError = $"InitiateGameConnection_DEPRECATED failed: {ex.GetType().Name}: {ex.Message}";
         }
 
+
         return GetRawAuthBytes();
     }
 
     /// <inheritdoc />
-    public void Dispose()
+    public override void Dispose()
     {
         _ticketData = [];
         IsAvailable = false;
