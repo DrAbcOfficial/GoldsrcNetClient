@@ -103,6 +103,13 @@ public class GoldsrcConnection : IDisposable
     public Task Connected => _connectedTcs.Task;
 
     /// <summary>
+    /// Button bitmask sent with each usercmd (move) packet.
+    /// Set to <c>1</c> (<c>IN_ATTACK</c>) to enable respawning in Sven Co-op.
+    /// Defaults to <c>0</c> (no buttons pressed).
+    /// </summary>
+    public ushort MoveButtons { get; set; }
+
+    /// <summary>
     /// The current userinfo string sent during the connect handshake.
     /// Uses the GoldSrc backslash-delimited key-value format:
     /// <c>\name\PlayerName\protocol\48\...</c>.
@@ -1257,7 +1264,7 @@ public class GoldsrcConnection : IDisposable
         await SendCommandAsync(ClientCommandType.Move, payload, ct);
     }
 
-    private static byte[] BuildMovePayload()
+    private byte[] BuildMovePayload()
     {
         var data = new byte[32];
         int bitIdx = 0;
@@ -1278,7 +1285,7 @@ public class GoldsrcConnection : IDisposable
         BitWriter.WriteBits(0u, 12, data, ref bitIdx, destSize); // forwardmove (signed, 0)
         BitWriter.WriteBits(0u, 12, data, ref bitIdx, destSize); // sidemove (signed, 0)
         BitWriter.WriteBits(0u, 12, data, ref bitIdx, destSize); // upmove (signed, 0)
-        BitWriter.WriteBits(0u, 16, data, ref bitIdx, destSize); // buttons
+        BitWriter.WriteBits((uint)MoveButtons, 16, data, ref bitIdx, destSize); // buttons
         BitWriter.WriteBits(0u, 8, data, ref bitIdx, destSize);  // impulse
         BitWriter.WriteBits(0u, 8, data, ref bitIdx, destSize);  // lightlevel
 

@@ -37,6 +37,9 @@ public partial class ConnectCommand : ICommand
     [CommandOption("userinfo", 'u', Description = "UserInfo key-value pairs: key1=val1&key2=val2... (e.g. name=Player&rate=25000).")]
     public string? UserInfoRaw { get; set; }
 
+    [CommandOption("buttons", 'b', Description = "Button bitmask sent with move packets. 1=attack (respawn), 2=jump, 4=duck. Default: 0.")]
+    public ushort MoveButtons { get; set; }
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -122,6 +125,8 @@ public partial class ConnectCommand : ICommand
         var messageHandler = gameHandler;
 
         using var client = new GoldsrcConnection(logger, authProvider, messageHandler);
+
+        client.MoveButtons = MoveButtons;
 
         if (!string.IsNullOrEmpty(UserInfoRaw))
         {
