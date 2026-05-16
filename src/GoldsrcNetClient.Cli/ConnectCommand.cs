@@ -63,7 +63,7 @@ public partial class ConnectCommand : ICommand
         if (UseSteam)
         {
             console.Output.WriteLine($"Initializing Steam (AppID {AppId})...");
-            var steamAuth = new SteamNetAuthProvider();
+            var steamAuth = new SteamNetAuthProvider(AppId);
             authDisposable = steamAuth;
 
             if (steamAuth.IsAvailable)

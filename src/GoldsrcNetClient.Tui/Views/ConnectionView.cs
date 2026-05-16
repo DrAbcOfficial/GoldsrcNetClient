@@ -310,20 +310,38 @@ public sealed class ConnectionView : View
     private async void Connect()
     {
         IReadOnlyList<ServerConfig> configs = _configStore.Configs;
-        if (_selectedServerIdx < 0 || _selectedServerIdx >= configs.Count) return;
-
+        if (_selectedServerIdx < 0 || _selectedServerIdx >= configs.Count) 
+            return;
+        var config = configs[_selectedServerIdx];
         _settingsView.ApplyUserInfo();
 
         switch (_appData.LoginMethod)
         {
-            case LoginMethod.SteamApi: _appData.AuthProvider ??= new SteamNetAuthProvider(); break;
-            case LoginMethod.SteamKit: if (_appData.AuthProvider == null) _statusLbl.Text = "Auth provider is NULL"; return;
+            case LoginMethod.SteamApi:
+                {
+                    if (_appData.AuthProvider is SteamNetAuthProvider oldProvider)
+                    {
+                        oldProvider.Dispose();
+                    }
+                    SteamNetAuthProvider provider = new(config.AppId);
+                    _appData.AuthProvider = provider;
+                    _appData.SteamUsername = SteamNetAuthProvider.GetSteamName();
+                    _appData.SteamId = SteamNetAuthProvider.GetSteamID();
+                    break;
+                }
+            case LoginMethod.SteamKit: 
+                if (_appData.AuthProvider == null) 
+                { 
+                    _statusLbl.Text = "Auth provider is NULL"; 
+                    return; 
+                }
+                break;
         }
 
         _connectBtn.Enabled = false;
         _statusLbl.Text = "Connecting...";
 
-        await _connManager.ConnectAsync(configs[_selectedServerIdx], _appData.AuthProvider, _appData.UserInfo);
+        await _connManager.ConnectAsync(config, _appData.AuthProvider, _appData.UserInfo);
         RefreshUserInfoFields();
     }
 
