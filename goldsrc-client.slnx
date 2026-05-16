@@ -4,5 +4,6 @@
     <Project Path="src/GoldsrcNetClient.Core/GoldsrcNetClient.Core.csproj" />
     <Project Path="src/GoldsrcNetClient.SteamProvider/GoldsrcNetClient.SteamProvider.csproj" />
     <Project Path="src/GoldsrcNetClient.Test/GoldsrcNetClient.Test.csproj" />
+    <Project Path="src/GoldsrcNetClient.Tui/GoldsrcNetClient.Tui.csproj" />
   </Folder>
 </Solution>
