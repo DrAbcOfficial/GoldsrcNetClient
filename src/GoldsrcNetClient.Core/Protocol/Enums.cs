@@ -147,6 +147,8 @@ public enum ServerMessageType : byte
     SendCvarValue2 = 0x3A,
     /// <summary>Execute config/script on the client.</summary>
     Exec = 0x3B,
+    /// <summary>USC (unified server config) message. Used for server-side user configurations.</summary>
+    UscMessage = 0x3C,
     /// <summary>First user-registered message type. Messages at or above this value are game-specific.</summary>
     UserMessageStart = 0x40
 }

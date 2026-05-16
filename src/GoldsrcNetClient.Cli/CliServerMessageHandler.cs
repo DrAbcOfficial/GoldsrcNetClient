@@ -122,16 +122,15 @@ public sealed class CliServerMessageHandler : IServerMessageHandler
 
     private static string GenerateRandomCvarValue(string name)
     {
-        var rng = Random.Shared;
         return name.ToLowerInvariant() switch
         {
             "cl_lc" or "cl_lw" or "cl_updaterate" => "1",
-            "rate" => rng.Next(20000, 100000).ToString(),
+            "rate" => Random.Shared.Next(20000, 100000).ToString(),
             "name" => "GoldsrcNetClient",
-            "topcolor" or "bottomcolor" => rng.Next(0, 256).ToString(),
+            "topcolor" or "bottomcolor" => Random.Shared.Next(0, 256).ToString(),
             "model" => "gordon",
             "_cl_autowepswitch" => "1",
-            _ => rng.Next(0, 1000).ToString()
+            _ => Random.Shared.Next(0, 1000).ToString()
         };
     }
 

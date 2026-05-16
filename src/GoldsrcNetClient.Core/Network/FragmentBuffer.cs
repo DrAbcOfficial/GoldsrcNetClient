@@ -5,6 +5,7 @@ namespace GoldsrcNetClient.Core.Network;
 /// <summary>
 /// Reassembly buffer for GoldSrc split-packet (fragmented) messages.
 /// Stores incoming fragments and exposes a callback invoked when reassembly completes.
+/// Useful for manual fragment reassembly outside the built-in connection pipeline.
 /// </summary>
 public class FragmentBuffer
 {

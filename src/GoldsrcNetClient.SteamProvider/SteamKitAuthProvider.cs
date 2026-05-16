@@ -1,13 +1,16 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using GoldsrcNetClient.Core.Network;
-using QRCoder;
 using SteamKit2;
 using SteamKit2.Authentication;
 using SteamKit2.Internal;
 
-namespace GoldsrcNetClient.Cli;
+namespace GoldsrcNetClient.SteamProvider;
 
+/// <summary>
+/// Steam authentication provider using SteamKit2 (pure managed, no native Steam client required).
+/// Supports QR code-based login via the Steam mobile app.
+/// </summary>
 public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
 {
     private readonly uint _appId;
@@ -24,9 +27,16 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<EResult> _logonTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <inheritdoc />
     public bool IsAvailable => _isLoggedOn;
+
+    /// <summary>The last error message if login or auth failed.</summary>
     public string? LastError { get; private set; }
 
+    /// <summary>
+    /// Initializes the SteamKit2 provider for the given AppId.
+    /// </summary>
+    /// <param name="appId">Steam AppId to authenticate with. Default 70 (Half-Life).</param>
     public SteamKitAuthProvider(uint appId = 70)
     {
         _appId = appId;
@@ -36,8 +46,10 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
         _steamApps = _client.GetHandler<SteamApps>()!;
     }
 
+    /// <inheritdoc />
     public byte GetAuthProtocol() => 3;
 
+    /// <inheritdoc />
     public string GetRawAuthData()
     {
         if (!_isLoggedOn)
@@ -45,6 +57,7 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
         return Convert.ToHexString(GetGameAuthBytesInternal() ?? []);
     }
 
+    /// <inheritdoc />
     public byte[] GetRawAuthBytes()
     {
         if (!_isLoggedOn)
@@ -52,6 +65,7 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
         return GetGameAuthBytesInternal() ?? System.Text.Encoding.UTF8.GetBytes("steam");
     }
 
+    /// <inheritdoc />
     public byte[] GetGameAuthBytes(ulong serverSteamId, uint serverIp, ushort serverPort)
     {
         if (!_isLoggedOn)
@@ -61,6 +75,9 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
         return result ?? GetRawAuthBytes();
     }
 
+    /// <summary>
+    /// Connects to the Steam network. Must be called before <see cref="BeginQrLoginAsync"/>.
+    /// </summary>
     public async Task ConnectAsync()
     {
         _callbackLoop = RunCallbackLoopAsync(_cts.Token);
@@ -68,6 +85,10 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
         await _connectedTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
     }
 
+    /// <summary>
+    /// Starts QR code-based login. Returns the challenge URL to be rendered as a QR code.
+    /// </summary>
+    /// <returns>The challenge URL for QR code rendering.</returns>
     public async Task<string> BeginQrLoginAsync()
     {
         var auth = _client.Authentication;
@@ -80,28 +101,12 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
             Authenticator = new UserConsoleAuthenticator(),
         });
 
-        _qrSession.ChallengeURLChanged = OnChallengeUrlChanged;
-
-        return RenderQrCode(_qrSession.ChallengeURL);
+        return _qrSession.ChallengeURL;
     }
 
-    private static string RenderQrCode(string url)
-    {
-        using var qrGenerator = new QRCodeGenerator();
-        var qrData = qrGenerator.CreateQrCode(url, QRCodeGenerator.ECCLevel.L);
-        using var qrCode = new AsciiQRCode(qrData);
-        return url + Environment.NewLine + Environment.NewLine
-            + "Use the Steam Mobile App to sign in via QR code:" + Environment.NewLine
-            + qrCode.GetGraphic(1, drawQuietZones: false);
-    }
-
-    private void OnChallengeUrlChanged()
-    {
-        Interlocked.Exchange(ref _qrUrl, RenderQrCode(_qrSession!.ChallengeURL));
-    }
-
-    private string? _qrUrl;
-
+    /// <summary>
+    /// Waits for QR login completion and performs Steam logon.
+    /// </summary>
     public async Task WaitForLoginAsync()
     {
         if (_qrSession == null)
@@ -215,6 +220,7 @@ public sealed class SteamKitAuthProvider : ISteamAuthProvider, IDisposable
         return ms.ToArray();
     }
 
+    /// <inheritdoc />
     public void Dispose()
     {
         _isLoggedOn = false;

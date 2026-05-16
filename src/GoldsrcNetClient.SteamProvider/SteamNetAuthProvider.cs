@@ -1,15 +1,26 @@
 using GoldsrcNetClient.Core.Network;
 using Steamworks;
 
-namespace GoldsrcNetClient.Cli;
+namespace GoldsrcNetClient.SteamProvider;
 
+/// <summary>
+/// Steam authentication provider using Facepunch Steamworks.NET.
+/// Requires the Steam client to be running and the user to own the specified AppId.
+/// </summary>
 public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
 {
     private byte[] _ticketData = [];
 
+    /// <summary>Whether the Steam provider initialized successfully.</summary>
     public bool IsAvailable { get; private set; }
+
+    /// <summary>The last error message if initialization or auth failed.</summary>
     public string? LastError { get; private set; }
 
+    /// <summary>
+    /// Initializes the Steamworks.NET provider for the given AppId.
+    /// </summary>
+    /// <param name="appId">Steam AppId to authenticate with. Default 70 (Half-Life).</param>
     public SteamNetAuthProvider(uint appId = 70)
     {
         try
@@ -33,8 +44,10 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
         }
     }
 
+    /// <inheritdoc />
     public byte GetAuthProtocol() => 3;
 
+    /// <inheritdoc />
     public string GetRawAuthData()
     {
         if (_ticketData.Length > 0)
@@ -43,6 +56,7 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
         return "steam";
     }
 
+    /// <inheritdoc />
     public byte[] GetRawAuthBytes()
     {
         if (_ticketData.Length > 0)
@@ -51,6 +65,7 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
         return System.Text.Encoding.UTF8.GetBytes("steam");
     }
 
+    /// <inheritdoc />
     public byte[] GetGameAuthBytes(ulong serverSteamId, uint serverIp, ushort serverPort)
     {
         if (!IsAvailable)
@@ -79,6 +94,7 @@ public sealed class SteamNetAuthProvider : ISteamAuthProvider, IDisposable
         return GetRawAuthBytes();
     }
 
+    /// <inheritdoc />
     public void Dispose()
     {
         _ticketData = [];

@@ -6,7 +6,9 @@ using System.Text.Json.Serialization;
 using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
+using GoldsrcNetClient.SteamProvider;
 using Microsoft.Extensions.Logging;
+using QRCoder;
 
 namespace GoldsrcNetClient.Cli;
 
@@ -88,8 +90,8 @@ public partial class ConnectCommand : ICommand
                 console.Output.WriteLine("Connecting to Steam...");
                 await steamKitAuth.ConnectAsync();
                 console.Output.WriteLine("Connected to Steam. Starting QR code login...");
-                var qrDisplay = await steamKitAuth.BeginQrLoginAsync();
-                console.Output.WriteLine(qrDisplay);
+                var qrUrl = await steamKitAuth.BeginQrLoginAsync();
+                console.Output.WriteLine(RenderQrCode(qrUrl));
                 console.Output.WriteLine("Waiting for authentication...");
                 await steamKitAuth.WaitForLoginAsync();
                 console.Output.WriteLine("SteamKit2 authentication successful.");
@@ -272,6 +274,16 @@ public partial class ConnectCommand : ICommand
 
         console.Output.WriteLine("Disconnected.");
         authDisposable?.Dispose();
+    }
+
+    private static string RenderQrCode(string url)
+    {
+        using var qrGenerator = new QRCodeGenerator();
+        var qrData = qrGenerator.CreateQrCode(url, QRCodeGenerator.ECCLevel.L);
+        using var qrCode = new AsciiQRCode(qrData);
+        return url + Environment.NewLine + Environment.NewLine
+            + "Use the Steam Mobile App to sign in via QR code:" + Environment.NewLine
+            + qrCode.GetGraphic(1, drawQuietZones: false);
     }
 
     private void Emit(string type, object data, IConsole console)

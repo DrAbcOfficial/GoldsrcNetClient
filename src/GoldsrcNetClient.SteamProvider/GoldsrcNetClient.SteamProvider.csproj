@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GoldsrcNetClient.Core\GoldsrcNetClient.Core.csproj" />
+    <PackageReference Include="Steamworks.NET.AnyCPU" Version="2025.162.7" />
+    <PackageReference Include="SteamKit2" Version="3.4.0" />
+  </ItemGroup>
+
+</Project>
