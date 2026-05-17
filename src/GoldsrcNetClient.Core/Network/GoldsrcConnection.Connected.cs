@@ -94,7 +94,9 @@ public partial class GoldsrcConnection
             {
                 int listStart = reader.Offset;
                 ProcessResourceList(ctx, reader);
-                Logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={reader.Offset - listStart}");
+                int dataBytes = reader.Offset - listStart;
+                ctx.ResourceListRawBytes = reader.Data[listStart..reader.Offset];
+                Logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={dataBytes}");
                 OnResourceList?.Invoke(this, ctx.Resources);
             }
             else if (dataType == (byte)ServerMessageType.TempEntity)

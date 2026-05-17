@@ -38,6 +38,9 @@ public sealed class ConnectionContext
     /// <summary>Parsed resource list from the server.</summary>
     public ResourceInfo[] Resources = [];
 
+    /// <summary>Raw bit-packed payload of the server's <c>svc_resourcelist</c> message (after the 0x2B type byte).</summary>
+    public byte[] ResourceListRawBytes = [];
+
     /// <summary>Registered user message types from the server.</summary>
     public List<UserMessage> UserMessages = [];
 

@@ -342,12 +342,22 @@ public sealed class ConnectionManager : IDisposable
                     {
                         if (reader.Remaining >= 8)
                         {
-                            reader.Offset += 4;
+                            reader.Offset += 8;
+                            byte[] rawData = connection.ResourceListRawBytes;
                             _ = Task.Run(async () =>
                             {
                                 try
                                 {
-                                    await connection.SendCommandAsync(ClientCommandType.ResourceList, [0]);
+                                    if (rawData.Length > 0)
+                                    {
+                                        var payload = new byte[rawData.Length];
+                                        Array.Copy(rawData, payload, rawData.Length);
+                                        await connection.SendCommandAsync(ClientCommandType.ResourceList, payload);
+                                    }
+                                    else
+                                    {
+                                        await connection.SendCommandAsync(ClientCommandType.ResourceList, [0, 0]);
+                                    }
                                 }
                                 catch { }
                             });

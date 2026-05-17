@@ -96,9 +96,10 @@ public sealed class CliServerMessageHandler : IServerMessageHandler
 
         connection.SpawnCount = spawnCount;
 
-        FireAndForget(SendResourceListReply(connection));
+        byte[] rawData = connection.ResourceListRawBytes;
+        FireAndForget(SendResourceListReply(connection, rawData));
         if (_debug)
-            _console.Output.WriteLine($"[ResourceRequest] spawnCount={spawnCount}, sent empty resource list");
+            _console.Output.WriteLine($"[ResourceRequest] spawnCount={spawnCount}, echoing {rawData.Length} resource list bytes");
     }
 
     private void HandleSendCvarValue(GoldsrcConnection connection, MessageReader reader)
@@ -134,13 +135,22 @@ public sealed class CliServerMessageHandler : IServerMessageHandler
         };
     }
 
-    private static async Task SendResourceListReply(GoldsrcConnection connection)
+    private static async Task SendResourceListReply(GoldsrcConnection connection, byte[] rawResourceData)
     {
-        var data = new byte[2];
-        int bitIdx = 0;
-        BitWriter.WriteBits(0u, 12, data, ref bitIdx, 2);
-        BitWriter.WriteBits(0u, 1, data, ref bitIdx, 2);
-        await connection.SendCommandAsync(ClientCommandType.ResourceList, data);
+        if (rawResourceData.Length > 0)
+        {
+            var data = new byte[rawResourceData.Length];
+            Array.Copy(rawResourceData, data, rawResourceData.Length);
+            await connection.SendCommandAsync(ClientCommandType.ResourceList, data);
+        }
+        else
+        {
+            var data = new byte[2];
+            int bitIdx = 0;
+            BitWriter.WriteBits(0u, 12, data, ref bitIdx, 2);
+            BitWriter.WriteBits(0u, 1, data, ref bitIdx, 2);
+            await connection.SendCommandAsync(ClientCommandType.ResourceList, data);
+        }
     }
 
     private static async Task SendCvarValueReply(GoldsrcConnection connection, string name, string value)

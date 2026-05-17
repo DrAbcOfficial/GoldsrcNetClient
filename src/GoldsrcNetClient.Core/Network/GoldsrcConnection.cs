@@ -93,6 +93,17 @@ public partial class GoldsrcConnection : IDisposable
     /// </summary>
     public event ResourceListHandler? OnResourceList;
 
+    /// <summary>
+    /// Raw bit-packed payload of the most recent <c>svc_resourcelist</c> from the server
+    /// (the data after the 0x2B type byte). Used to echo back identical data when the
+    /// server sends a <see cref="ServerMessageType.ResourceRequest"/>.
+    /// Returns an empty array if no resource list has been received yet.
+    /// </summary>
+    public byte[] ResourceListRawBytes
+    {
+        get => _contexts.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var ctx) ? ctx.ResourceListRawBytes : [];
+    }
+
     /// <summary>Delegate for <see cref="OnDataPacket"/> events.</summary>
     /// <param name="conn">The connection that received the data.</param>
     /// <param name="data">Raw packet bytes (including header) for debugging or external processing.</param>
