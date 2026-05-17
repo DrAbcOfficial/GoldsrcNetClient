@@ -45,8 +45,8 @@ public partial class GoldsrcConnection
         int reliableLen = msgLen;
         int firstFragDataStart = msgLen;
 
-        bool hasStream0Frag = stream0Active && stream0FragLen > 0 && stream0FragId != 0;
-        bool hasStream1Frag = stream1Active && stream1FragLen > 0 && stream1FragId != 0;
+        bool hasStream0Frag = stream0Active && stream0FragLen > 0;
+        bool hasStream1Frag = stream1Active && stream1FragLen > 0;
 
         if (hasStream0Frag)
         {
@@ -58,31 +58,63 @@ public partial class GoldsrcConnection
         }
         reliableLen = Math.Min(reliableLen, firstFragDataStart);
 
+        bool fragProcessed = false;
+
         if (hasStream0Frag)
         {
             int fragStart = hdr + stream0StartPos;
             int fragLen = Math.Min(stream0FragLen, payloadLen - fragStart);
             if (fragLen > 0)
             {
-                byte[] fragChunk = new byte[fragLen];
-                Array.Copy(payload, fragStart, fragChunk, 0, fragLen);
-                AccumulateFragment(ctx, stream0FragId, fragChunk, Logger);
-                if (stream0StartPos == 0)
-                    reliableLen = 0;
+                if (stream0FragId == 0)
+                {
+                    byte[] combined = new byte[reliableLen + fragLen];
+                    if (reliableLen > 0)
+                        Array.Copy(payload, hdr, combined, 0, reliableLen);
+                    Array.Copy(payload, fragStart, combined, reliableLen, fragLen);
+                    Logger.LogDebug($"[Fragment] To=0, combining {reliableLen}+{fragLen}={combined.Length} bytes");
+                    _ = SendAckAsync(ep);
+                    _sessions[ep] = ProcessConnected(ep, ref srcSeq, ref dstSeq, combined, combined.Length);
+                    fragProcessed = true;
+                }
+                else
+                {
+                    byte[] fragChunk = new byte[fragLen];
+                    Array.Copy(payload, fragStart, fragChunk, 0, fragLen);
+                    AccumulateFragment(ctx, stream0FragId, fragChunk, Logger);
+                    if (stream0StartPos == 0)
+                        reliableLen = 0;
+                }
             }
         }
 
-        if (hasStream1Frag)
+        if (!fragProcessed && hasStream1Frag)
         {
             int fragStart = hdr + stream1StartPos;
             int fragLen = Math.Min(stream1FragLen, payloadLen - fragStart);
             if (fragLen > 0)
             {
-                byte[] fragChunk = new byte[fragLen];
-                Array.Copy(payload, fragStart, fragChunk, 0, fragLen);
-                AccumulateFragment(ctx, stream1FragId, fragChunk, Logger);
+                if (stream1FragId == 0)
+                {
+                    byte[] combined = new byte[reliableLen + fragLen];
+                    if (reliableLen > 0)
+                        Array.Copy(payload, hdr, combined, 0, reliableLen);
+                    Array.Copy(payload, fragStart, combined, reliableLen, fragLen);
+                    Logger.LogDebug($"[Fragment] To=0, combining {reliableLen}+{fragLen}={combined.Length} bytes");
+                    _ = SendAckAsync(ep);
+                    _sessions[ep] = ProcessConnected(ep, ref srcSeq, ref dstSeq, combined, combined.Length);
+                    fragProcessed = true;
+                }
+                else
+                {
+                    byte[] fragChunk = new byte[fragLen];
+                    Array.Copy(payload, fragStart, fragChunk, 0, fragLen);
+                    AccumulateFragment(ctx, stream1FragId, fragChunk, Logger);
+                }
             }
         }
+
+        if (fragProcessed) return;
 
         byte[]? completedData = TryCompleteFragments(ctx, Logger);
         if (completedData != null)
