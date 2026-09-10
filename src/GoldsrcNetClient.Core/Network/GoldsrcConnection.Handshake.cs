@@ -18,22 +18,29 @@ public partial class GoldsrcConnection
 
             if (parts.Length >= 2 && parts[0].StartsWith('A'))
             {
-                string challengeFromMarker = parts[0][1..];
-                string challengeFromField = parts[1];
-
+                string challengeToken = parts[1];
                 ctx.AuthProtocol = parts.Length > 2 && int.TryParse(parts[2], out int ap) ? (byte)ap : AuthProtocolSteam;
-                if (parts.Length > 3 && ulong.TryParse(parts[3], out ulong sid))
-                    ctx.ServerSteamId = sid;
-                if (parts.Length > 4 && int.TryParse(parts[4], out int reqTicket))
-                    ctx.RequiresGameAuthTicket = reqTicket != 0;
-                Logger.LogDebug($"[Challenge] Format A: markerHex={challengeFromMarker}, field2={challengeFromField}, authProto={ctx.AuthProtocol}, serverSteamId={ctx.ServerSteamId}, requiresTicket={ctx.RequiresGameAuthTicket}, parts={parts.Length}");
 
-                string challengeToken = challengeFromField;
-                Logger.LogDebug($"[Challenge] using field2 as challenge: {challengeToken}");
+                // Steam-auth challenges carry "<serverSteamId> <vacSecure> [build]".
+                // Server SteamIDs may carry trailing non-digit characters; parse the
+                // leading digits only.
+                ulong serverSteamId = 0;
+                if (parts.Length > 3)
+                    serverSteamId = ParseLeadingDigits(parts[3]);
+                ctx.ServerSteamId = serverSteamId;
+
+                ctx.IsVac2Secure = parts.Length > 4 && parts[4].Length > 0 && parts[4][0] == '1';
+                if (parts.Length > 5 && uint.TryParse(parts[5], out uint build))
+                    ctx.ServerBuildNumber = build;
+
+                // Steam-authenticated servers always expect an auth ticket blob
+                // appended to the connect packet.
+                ctx.RequiresGameAuthTicket = ctx.AuthProtocol == AuthProtocolSteam;
+
+                Logger.LogDebug($"[Challenge] challenge={challengeToken}, authProto={ctx.AuthProtocol}, serverSteamId={ctx.ServerSteamId}, vacSecure={ctx.IsVac2Secure}, build={ctx.ServerBuildNumber}");
 
                 ctx.Challenge = Encoding.UTF8.GetBytes(challengeToken);
 
-                Logger.LogDebug($"[Challenge] parsed: challenge={challengeToken}, authProto={ctx.AuthProtocol}");
                 var data = BuildConnectPacket(ep, appId);
                 Logger.LogDebug($"[Connect] sending connect packet, len={data.Length}");
                 await _socket.SendAsync(new ReadOnlyMemory<byte>(data), ep, ct);
@@ -62,7 +69,9 @@ public partial class GoldsrcConnection
             if (msgId.StartsWith('B'))
             {
                 ctx.UserId = parts.Length > 1 && int.TryParse(parts[1], out int uid) ? uid : 0;
-                Logger.LogDebug($"[Connect0] Approval (B): userId={ctx.UserId}, parts={parts.Length}, payload={payload}");
+                if (parts.Length > 4 && uint.TryParse(parts[4], out uint build))
+                    ctx.ServerBuildNumber = build;
+                Logger.LogDebug($"[Connect0] Approval (B): userId={ctx.UserId}, build={ctx.ServerBuildNumber}, payload={payload}");
                 Logger.LogInformation($"Connection accepted by {ep}");
 
                 Logger.LogDebug($"[State] Connect0 -> Connected. Sending 'new' stringcmd");
@@ -83,6 +92,18 @@ public partial class GoldsrcConnection
         return state;
     }
 
+    /// <summary>
+    /// Parses the leading decimal digits of a token, ignoring any trailing
+    /// characters — the same lenient semantics the engine uses for numeric tokens.
+    /// </summary>
+    private static ulong ParseLeadingDigits(string token)
+    {
+        int end = 0;
+        while (end < token.Length && char.IsDigit(token[end]))
+            end++;
+        return end > 0 && ulong.TryParse(token[..end], out ulong value) ? value : 0;
+    }
+
     private byte[] BuildConnectPacket(IPEndPoint ep, uint appId)
     {
         var ctx = _contexts[ep];
@@ -96,8 +117,12 @@ public partial class GoldsrcConnection
 
         if (useGameTicket)
         {
-            ticketBytes = _authProvider.GetGameAuthBytes(appId, ctx.ServerSteamId, ctx.ServerIp, ctx.ServerPort);
-            Logger.LogDebug($"[Connect] using game auth ticket: serverSteamId={ctx.ServerSteamId}, len={ticketBytes.Length}");
+            // The ticket binds to the server endpoint. The engine passes the IP as the
+            // raw four address bytes and the port in network byte order; both ctx values
+            // are converted to that layout here so providers receive Steam-ready values.
+            ushort networkOrderPort = (ushort)((ctx.ServerPort >> 8) | (ctx.ServerPort << 8));
+            ticketBytes = _authProvider.GetGameAuthBytes(appId, ctx.ServerSteamId, ctx.ServerIp, networkOrderPort, ctx.IsVac2Secure);
+            Logger.LogDebug($"[Connect] using game auth ticket: serverSteamId={ctx.ServerSteamId}, vacSecure={ctx.IsVac2Secure}, len={ticketBytes.Length}");
             rawValue = "steam";
             cdKeyHash = "12345678901234567890123456789012";
         }

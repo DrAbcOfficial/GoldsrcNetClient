@@ -25,8 +25,10 @@ public interface ISteamAuthProvider
     /// Defaults to <see cref="GetRawAuthBytes"/> when no game ticket is available.
     /// </summary>
     /// <param name="appid">The Steam AppId to authenticate with.</param>
-    /// <param name="serverSteamId">The server's Steam ID.</param>
-    /// <param name="serverIp">The server's IP address as a 32-bit integer.</param>
-    /// <param name="serverPort">The server's game port.</param>
-    byte[] GetGameAuthBytes(uint appid, ulong serverSteamId, uint serverIp, ushort serverPort) => GetRawAuthBytes();
+    /// <param name="serverSteamId">The game server's SteamID64.</param>
+    /// <param name="serverIp">The server IP as the raw four address bytes read as a 32-bit integer
+    /// (the layout the engine passes to the Steam ticket API).</param>
+    /// <param name="serverPort">The server port in network byte order (byte-swapped on little-endian).</param>
+    /// <param name="vac2Secure">Whether the server advertised itself as VAC-secured.</param>
+    byte[] GetGameAuthBytes(uint appid, ulong serverSteamId, uint serverIp, ushort serverPort, bool vac2Secure) => GetRawAuthBytes();
 }

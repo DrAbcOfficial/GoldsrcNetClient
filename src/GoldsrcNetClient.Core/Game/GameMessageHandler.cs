@@ -31,7 +31,7 @@ namespace GoldsrcNetClient.Core.Game;
 public abstract class GameMessageHandler : IServerMessageHandler
 {
     /// <summary>Registry of user message indices mapped to their names.</summary>
-    protected readonly UserMessageRegistry Registry = new();
+    public readonly UserMessageRegistry Registry = new();
 
     /// <summary>
     /// Optional next handler in the chain. Called for engine messages that this
@@ -55,8 +55,28 @@ public abstract class GameMessageHandler : IServerMessageHandler
 
         if (messageType >= (byte)ServerMessageType.UserMessageStart)
         {
-            if (Registry.TryGetName(messageType, out var name))
+            Registry.TryGetName(messageType, out var name);
+
+            if (Registry.TryGetSize(messageType, out var size))
             {
+                // Fixed-size registration: dispatch over a bounded view of the payload
+                // and always consume exactly the registered length, so a mis-parsed
+                // message can never desynchronise the surrounding stream.
+                int payloadEnd = Math.Min(reader.Offset + size, reader.Size);
+                var bounded = new MessageReader(reader.Data[reader.Offset..payloadEnd]);
+
+                if (name != null)
+                    DispatchUserMessage(connection, messageType, name, bounded);
+
+                OnRawUserMessage?.Invoke(new RawUserMessage(messageType, name ?? "unknown", bounded.Data[bounded.Offset..bounded.Size]));
+                reader.Offset = payloadEnd;
+                return true;
+            }
+
+            if (Registry.TryGetName(messageType, out name))
+            {
+                // Variable-length registration: game-specific layouts are parsed by
+                // the handler; whatever it leaves is treated as the tail of the block.
                 if (DispatchUserMessage(connection, messageType, name!, reader))
                     return true;
             }

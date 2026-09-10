@@ -8,7 +8,7 @@ public partial class GoldsrcConnection
 {
     private static void ProcessResourceList(ConnectionContext ctx, MessageReader reader)
     {
-        int bitIdx = 0;
+        int bitIdx = reader.Offset * 8;
         uint resourceCount = 0;
         if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref resourceCount, 12)) return;
 
@@ -95,6 +95,6 @@ public partial class GoldsrcConnection
             }
         }
 
-        reader.Offset += bitIdx / 8 + (bitIdx % 8 != 0 ? 1 : 0);
+        reader.Offset = (bitIdx + 7) / 8;
     }
 }

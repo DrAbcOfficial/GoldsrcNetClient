@@ -257,6 +257,20 @@ public static class DeltaDefinitions
         new("fuser4", DeltaFieldFlag.Signed | DeltaFieldFlag.Float, 2, 128.0f),
     ]);
 
+    /// <summary>
+    /// Meta delta type used to encode svc_deltadescription field entries themselves.
+    /// Each received field description is delta-encoded against this definition.
+    /// </summary>
+    public static readonly DeltaType MetaDeltaDescription = new("delta_description_t", 7, [
+        new("fieldType", DeltaFieldFlag.Integer, 32, 1.0f),
+        new("fieldName", DeltaFieldFlag.StringField, 1, 1.0f),
+        new("fieldOffset", DeltaFieldFlag.Integer, 16, 1.0f),
+        new("fieldSize", DeltaFieldFlag.Integer, 8, 1.0f),
+        new("significant_bits", DeltaFieldFlag.Integer, 8, 1.0f),
+        new("premultiply", DeltaFieldFlag.Float, 32, 1.0f),
+        new("postmultiply", DeltaFieldFlag.Float, 32, 1.0f),
+    ]);
+
     /// <summary>All predefined delta types in a single array for iteration.</summary>
     public static readonly DeltaType[] All = [Event, WeaponData, UserCmd, CustomEntityState, EntityStatePlayer, EntityState, ClientData];
 

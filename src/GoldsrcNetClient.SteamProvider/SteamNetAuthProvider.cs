@@ -66,7 +66,7 @@ public sealed class SteamNetAuthProvider : SteamBaseAuthProvider
     }
 
     /// <inheritdoc />
-    public override byte[] GetGameAuthBytes(uint appId, ulong serverSteamId, uint serverIp, ushort serverPort)
+    public override byte[] GetGameAuthBytes(uint appId, ulong serverSteamId, uint serverIp, ushort serverPort, bool vac2Secure)
     {
         if(appId != _appId)
         {
@@ -78,7 +78,7 @@ public sealed class SteamNetAuthProvider : SteamBaseAuthProvider
             var blob = new byte[4096];
             var steamId = new CSteamID(serverSteamId);
             int resultLen = SteamUser.InitiateGameConnection_DEPRECATED(
-                blob, blob.Length, steamId, serverIp, serverPort, false);
+                blob, blob.Length, steamId, serverIp, serverPort, vac2Secure);
 
             if (resultLen > 0)
             {

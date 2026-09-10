@@ -69,7 +69,7 @@ public sealed class SteamKitAuthProvider : SteamBaseAuthProvider
     }
 
     /// <inheritdoc />
-    public override byte[] GetGameAuthBytes(uint appId, ulong serverSteamId, uint serverIp, ushort serverPort)
+    public override byte[] GetGameAuthBytes(uint appId, ulong serverSteamId, uint serverIp, ushort serverPort, bool vac2Secure)
     {
         if (!_isLoggedOn)
             return GetRawAuthBytes();

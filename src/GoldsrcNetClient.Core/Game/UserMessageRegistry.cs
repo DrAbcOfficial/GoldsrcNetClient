@@ -1,16 +1,16 @@
 using GoldsrcNetClient.Core.Messages;
-using GoldsrcNetClient.Core.Protocol;
 using System.Text;
 
 namespace GoldsrcNetClient.Core.Game;
 
 /// <summary>
-/// Tracks user message registrations received via <see cref="ServerMessageType.NewUserMsg"/> (SVC_NEWUSERMSG).
-/// Maps user message indices to their names so that handlers can dispatch by message name.
+/// Tracks user message registrations received via <see cref="GoldsrcNetClient.Core.Protocol.ServerMessageType.NewUserMsg"/> (SVC_NEWUSERMSG).
+/// Maps user message indices to their names and declared payload sizes so that handlers
+/// can dispatch by message name and consume exactly the announced payload length.
 /// </summary>
 public sealed class UserMessageRegistry
 {
-    private readonly Dictionary<byte, string> _messages = [];
+    private readonly Dictionary<byte, UserMessageRegistration> _messages = [];
 
     /// <summary>Number of registered messages.</summary>
     public int Count => _messages.Count;
@@ -21,20 +21,20 @@ public sealed class UserMessageRegistry
     public void Clear() => _messages.Clear();
 
     /// <summary>
-    /// Registers a user message from the raw <see cref="ServerMessageType.NewUserMsg"/> payload.
+    /// Registers a user message from the raw <see cref="GoldsrcNetClient.Core.Protocol.ServerMessageType.NewUserMsg"/> payload.
     /// Advances the reader past the consumed bytes.
     /// </summary>
-    public void Register(MessageReader reader)
+    public unsafe void Register(MessageReader reader)
     {
         int msgSize;
-        unsafe { msgSize = sizeof(NewUserMsgData); }
+        unsafe { msgSize = sizeof(GoldsrcNetClient.Core.Protocol.NewUserMsgData); }
         if (reader.Remaining < msgSize) return;
 
         unsafe
         {
             fixed (byte* p = &reader.Data[reader.Offset])
             {
-                var msg = *(NewUserMsgData*)p;
+                var msg = *(GoldsrcNetClient.Core.Protocol.NewUserMsgData*)p;
                 reader.Offset += msgSize;
 
                 int len = 0;
@@ -42,7 +42,7 @@ public sealed class UserMessageRegistry
                 var name = Encoding.UTF8.GetString(msg.NameData, len);
 
                 if (name.Length > 0)
-                    _messages[msg.Index] = name;
+                    _messages[msg.Index] = new UserMessageRegistration(name, msg.Size);
             }
         }
     }
@@ -52,11 +52,36 @@ public sealed class UserMessageRegistry
     /// </summary>
     /// <returns>The message name, or null if not registered.</returns>
     public string? GetName(byte index) =>
-        _messages.TryGetValue(index, out var name) ? name : null;
+        _messages.TryGetValue(index, out var reg) ? reg.Name : null;
 
     /// <summary>
     /// Tries to get the user message name for a given index.
     /// </summary>
-    public bool TryGetName(byte index, out string? name) =>
-        _messages.TryGetValue(index, out name);
+    public bool TryGetName(byte index, out string? name)
+    {
+        name = GetName(index);
+        return name != null;
+    }
+
+    /// <summary>
+    /// Tries to get the declared payload size for a user message index.
+    /// Returns false when the index is unknown or the message is variable-length
+    /// (registered with a size of 0 or 255).
+    /// </summary>
+    public bool TryGetSize(byte index, out int size)
+    {
+        size = 0;
+        if (!_messages.TryGetValue(index, out var reg))
+            return false;
+        if (reg.Size == 0 || reg.Size == 0xFF)
+            return false;
+        size = reg.Size;
+        return true;
+    }
+
+    /// <summary>All registered user messages, ordered by index.</summary>
+    public IEnumerable<(byte Index, string Name, byte Size)> Entries =>
+        _messages.OrderBy(kv => kv.Key).Select(kv => (kv.Key, kv.Value.Name, kv.Value.Size));
+
+    private readonly record struct UserMessageRegistration(string Name, byte Size);
 }

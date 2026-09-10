@@ -18,5 +18,5 @@ public abstract class SteamBaseAuthProvider : ISteamAuthProvider, IDisposable
     /// <inheritdoc />
     public abstract byte[] GetRawAuthBytes();
     /// <inheritdoc />
-    public abstract byte[] GetGameAuthBytes(uint appid, ulong serverSteamId, uint serverIp, ushort serverPort);
+    public abstract byte[] GetGameAuthBytes(uint appid, ulong serverSteamId, uint serverIp, ushort serverPort, bool vac2Secure);
 }

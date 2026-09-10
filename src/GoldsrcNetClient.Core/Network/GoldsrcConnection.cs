@@ -49,6 +49,15 @@ public partial class GoldsrcConnection : IDisposable
     private CancellationTokenSource? _moveCts;
     private Task? _moveTask;
 
+    /// <summary>Raised when the server disconnects the client, with the server-supplied reason.</summary>
+    public event Action<string>? OnServerDisconnect;
+
+    /// <summary>
+    /// Raised for every <c>svc_print</c> console message the server sends
+    /// (chat for text-only mods, kick/drop notices, rule changes, etc.).
+    /// </summary>
+    public event Action<string>? OnConsolePrint;
+
     /// <summary>
     /// Configurable engine behavior settings. Modify before or during a connection
     /// to customize protocol version, move interval, cvar defaults, and more.
@@ -186,34 +195,39 @@ public partial class GoldsrcConnection : IDisposable
     }
 
     /// <summary>
-    /// Sends a string command to the connected server.
+    /// Sends a console command string to the server as a reliable
+    /// <see cref="ClientCommandType.StringCmd"/> message (e.g. <c>"say hello"</c>, <c>"status"</c>).
+    /// Delivery is guaranteed by the netchan until the server acknowledges it.
     /// </summary>
     /// <param name="cmd">The client command type.</param>
     /// <param name="payload">Null-terminated string payload.</param>
     /// <param name="ct">Cancellation token.</param>
-    public async Task SendStringCmdAsync(ClientCommandType cmd, string payload, CancellationToken ct = default)
+    public Task SendStringCmdAsync(ClientCommandType cmd, string payload, CancellationToken ct = default)
     {
         if (_activeEndpoint == null)
             throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
         var cmdBytes = new List<byte> { (byte)cmd };
         cmdBytes.AddRange(Encoding.UTF8.GetBytes(payload));
         cmdBytes.Add(0);
-        await SendRawAsync(_activeEndpoint, cmdBytes.ToArray(), ct);
+        SendReliable(_activeEndpoint, [.. cmdBytes]);
+        return Task.CompletedTask;
     }
 
     /// <summary>
-    /// Sends a raw command with arbitrary data to the connected server.
+    /// Sends a raw reliable command with arbitrary data to the connected server.
     /// </summary>
     /// <param name="cmd">The client command type byte.</param>
     /// <param name="data">Raw payload bytes (appended after the command byte).</param>
     /// <param name="ct">Cancellation token.</param>
-    public async Task SendCommandAsync(ClientCommandType cmd, byte[] data, CancellationToken ct = default)
+    public Task SendCommandAsync(ClientCommandType cmd, byte[] data, CancellationToken ct = default)
     {
         if (_activeEndpoint == null)
             throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
-        var bytes = new List<byte> { (byte)cmd };
-        bytes.AddRange(data);
-        await SendRawAsync(_activeEndpoint, bytes.ToArray(), ct);
+        var bytes = new byte[data.Length + 1];
+        bytes[0] = (byte)cmd;
+        data.CopyTo(bytes, 1);
+        SendReliable(_activeEndpoint, bytes);
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -240,6 +254,8 @@ public partial class GoldsrcConnection : IDisposable
         var challengePacket = _authProvider.IsAvailable ? GetChallengeSteamPacket : GetChallengePacket;
         await _socket.SendAsync(new ReadOnlyMemory<byte>(challengePacket), ep, ct);
 
+        StartKeepAliveTask();
+
         Logger.LogDebug("[Loop] entering receive loop");
         while (!ct.IsCancellationRequested)
         {
@@ -253,12 +269,11 @@ public partial class GoldsrcConnection : IDisposable
             if (!ep.Equals(from)) continue;
             if (len < 4) continue;
 
-            int offset = 0;
             uint header = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4));
-            offset += 4;
 
             if (header == MessageConstants.ConnectionlessMarker)
             {
+                int offset = 4;
                 var payload = Encoding.UTF8.GetString(data, offset, len - offset);
                 Logger.LogDebug($"connectionless: {payload[..Math.Min(payload.Length, 200)]}");
                 _sessions[ep] = await ProcessConnectionless(ep, payload, appId, ct);
@@ -266,7 +281,6 @@ public partial class GoldsrcConnection : IDisposable
                 {
                     Logger.LogInformation("[State] -> Connected. Handshake complete.");
                     _connectedTcs.TrySetResult();
-                    StartMoveTask();
                 }
             }
             else if (header == MessageConstants.SplitMarker)
@@ -275,71 +289,8 @@ public partial class GoldsrcConnection : IDisposable
             }
             else
             {
-                var ctx = _contexts[ep];
-                uint rawHeader = header;
-                bool isFragment = (rawHeader & MessageConstants.SequenceModeFragment) != 0;
-                bool isCommand = (rawHeader & MessageConstants.SequenceModeCommand) != 0;
-                uint srcSeq = rawHeader & MessageConstants.SequenceMask;
-                uint dstSeq = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
-                offset += 4;
-
-                ctx.DstSequence = srcSeq;
-
-                int payloadLen = len - offset;
-                Logger.LogDebug($"connected packet: srcSeq={srcSeq}, dstSeq={dstSeq}, isFragment={isFragment}, isCommand={isCommand}, payload={payloadLen}");
-                OnDataPacket?.Invoke(this, data);
-
-                if (payloadLen <= 0) continue;
-
-                byte[] payload = new byte[payloadLen];
-                Array.Copy(data, offset, payload, 0, payloadLen);
-
-                if (isFragment && isCommand)
-                {
-                    ProcessFragmentCommand(ctx, ep, payload, payloadLen, ref srcSeq, ref dstSeq);
-                    continue;
-                }
-
-                if (isFragment)
-                {
-                    Logger.LogWarning($"[Fragment] unexpected fragment-only packet (no command flag), accumulating {payloadLen} bytes");
-                    ctx.IncomingFragment.AddRange(payload);
-                    _ = SendAckAsync(ep);
-                    continue;
-                }
-
-                byte[] messageData;
-                int messageLen;
-                if (ctx.IncomingFragment.Count > 0)
-                {
-                    Logger.LogDebug($"[Fragment] reassembly complete: {ctx.IncomingFragment.Count} + {payloadLen} = {ctx.IncomingFragment.Count + payloadLen} bytes");
-                    messageData = [.. ctx.IncomingFragment, .. payload];
-                    messageLen = messageData.Length;
-                    ctx.IncomingFragment.Clear();
-                }
-                else
-                {
-                    messageData = payload;
-                    messageLen = payloadLen;
-                }
-
-                if (!isCommand && messageLen == 8 && BitConverter.ToUInt64(messageData, 0) == MessageConstants.AckData)
-                {
-                    Logger.LogDebug($"[Ack] received ack, dstSeq={dstSeq}");
-                    continue;
-                }
-
-                if (!isCommand)
-                {
-                    Logger.LogDebug($"[Munge] UnMunge2 message len={messageLen}, seq={(int)(srcSeq & 0xFF)}");
-                    MungeEngine.UnMunge2(messageData, messageLen, (int)(srcSeq & 0xFF));
-                }
-                else
-                {
-                    Logger.LogDebug($"[Munge] Command packet, skipping UnMunge2 for message len={messageLen}");
-                }
-
-                _sessions[ep] = ProcessConnected(ep, ref srcSeq, ref dstSeq, messageData, messageLen);
+                OnDataPacket?.Invoke(this, data.ToArray());
+                ProcessNetchanPacket(ep, data.ToArray());
             }
         }
     }

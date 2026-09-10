@@ -1,5 +1,6 @@
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
+using Microsoft.Extensions.Logging;
 
 namespace GoldsrcNetClient.Core.Game;
 
@@ -153,6 +154,11 @@ public class HalfLifeMessageHandler : GameMessageHandler
     {
         switch (name)
         {
+            case "ReqState":
+                // The game DLL asks the client to re-send its state; the vanilla
+                // client replies with the "fullupdate" console command.
+                ParseReqState(connection, reader);
+                return true;
             case "CurWeapon": ParseCurWeapon(reader); return true;
             case "Damage": ParseDamage(reader); return true;
             case "DeathMsg": ParseDeathMsg(reader); return true;
@@ -185,6 +191,16 @@ public class HalfLifeMessageHandler : GameMessageHandler
             case "HudColor": ParseHudColor(reader); return true;
             default: return false;
         }
+    }
+
+    /// <summary>ReqState: the game DLL's voice manager requests the client's voice state;
+    /// the vanilla client replies with the <c>VModEnable 1</c> console command. Unanswered
+    /// polls keep the server re-queueing state until its reliable channel overflows.</summary>
+    protected virtual void ParseReqState(GoldsrcConnection connection, MessageReader r)
+    {
+        r.Offset = r.Size; // consume the opaque payload
+        connection.Logger.LogDebug("[ReqState] replying VModEnable 1");
+        _ = connection.SendStringCmdAsync(Protocol.ClientCommandType.StringCmd, "VModEnable 1");
     }
 
     /// <summary>CurWeapon: byte IsActive, byte WeaponId, byte ClipAmmo</summary>
