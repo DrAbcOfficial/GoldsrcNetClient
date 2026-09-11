@@ -9,26 +9,33 @@ public class GoldsrcEngineSettings
     /// <summary>Network protocol version to use. Default 48 (compatible with HL25/GoldSrc).</summary>
     public int ProtocolVersion { get; set; } = 48;
 
-    /// <summary>Interval in milliseconds between move/keepalive packet sends. Default 100ms.</summary>
-    public int MoveIntervalMs { get; set; } = 100;
+    /// <summary>Interval in milliseconds between move/keepalive packet sends. Default 30ms
+    /// (~33 packets/s, matching a real client's frame cadence). The server's reliable
+    /// channel advances at most one queued message per received client packet
+    /// (netchan lock-step), so a low packet rate throttles the server's reliable
+    /// drain and lets <c>netchan.message</c> fill up until the server drops us with
+    /// <c>Reliable channel overflowed</c>.</summary>
+    public int MoveIntervalMs { get; set; } = 30;
 
-    /// <summary>Default UserInfo string template. Uses GoldSrc backslash-delimited key-value format.</summary>
+    /// <summary>Default UserInfo string template. Uses GoldSrc backslash-delimited key-value format.
+    /// A high <c>rate</c> keeps the server's reliable fragment stream draining fast; the
+    /// server clamps it to <c>sv_maxrate</c> anyway.</summary>
     public string DefaultUserInfo { get; set; } =
-        "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000\\hltv\\0";
+        "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_dlmax\\1024\\cl_updaterate\\60\\rate\\100000\\hltv\\0";
 
     /// <summary>Default values returned when the server queries cvar values via SendCvarValue/SendCvarValue2.</summary>
     public Dictionary<string, string> CvarDefaultValues { get; set; } = new(StringComparer.OrdinalIgnoreCase)
     {
         ["cl_lc"] = "1",
         ["cl_lw"] = "1",
-        ["cl_updaterate"] = "1",
-        ["rate"] = "20000",
+        ["cl_updaterate"] = "60",
+        ["rate"] = "100000",
         ["name"] = "GoldsrcNetClient",
         ["topcolor"] = "0",
         ["bottomcolor"] = "0",
         ["model"] = "gordon",
         ["_cl_autowepswitch"] = "1",
-        ["cl_dlmax"] = "80",
+        ["cl_dlmax"] = "1024",
         ["hltv"] = "0",
     };
 

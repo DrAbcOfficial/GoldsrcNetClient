@@ -137,7 +137,17 @@ public partial class GoldsrcConnection : IDisposable
     /// <c>\name\PlayerName\protocol\48\...</c>.
     /// Updated automatically when the server sends <see cref="ServerMessageType.UpdateUserInfo"/>.
     /// </summary>
-    public string UserInfo { get; set; } = "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000\\hltv\\0";
+    /// <remarks>
+    /// <para><c>rate</c> controls how fast the server may transmit the reliable
+    /// fragment stream towards us. A low value paces the signon batch one small
+    /// fragment per rate-window, which keeps the server's per-client reliable
+    /// buffer (<c>netchan.message</c>, ~4 KB) blocked for the whole transfer;
+    /// game-DLL reliable messages written during that window then overflow it and
+    /// the server drops us with <c>Reliable channel overflowed</c>. Real clients
+    /// therefore negotiate a high rate, and the server clamps it to
+    /// <c>sv_maxrate</c> anyway.</para>
+    /// </remarks>
+    public string UserInfo { get; set; } = "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_dlmax\\1024\\cl_updaterate\\60\\rate\\100000\\hltv\\0";
 
     /// <summary>Sets a single key-value pair in the <see cref="UserInfo"/> string.</summary>
     /// <param name="key">The key to set (case-insensitive).</param>

@@ -1,4 +1,5 @@
 using GoldsrcNetClient.Core.Messages;
+using Microsoft.Extensions.Logging;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Util;
 
@@ -6,7 +7,7 @@ namespace GoldsrcNetClient.Core.Network;
 
 public partial class GoldsrcConnection
 {
-    private static void ProcessResourceList(ConnectionContext ctx, MessageReader reader)
+    private void ProcessResourceList(ConnectionContext ctx, MessageReader reader)
     {
         int bitIdx = reader.Offset * 8;
         uint resourceCount = 0;
@@ -91,7 +92,10 @@ public partial class GoldsrcConnection
                 }
 
                 if (lastIndex < ctx.Resources.Length)
+                {
                     ctx.Resources[lastIndex].NeedConsistency = true;
+                    Logger.LogDebug($"[ResourceList] consistency required for index {lastIndex}: {ctx.Resources[lastIndex].Name} (flags {ctx.Resources[lastIndex].Flag})");
+                }
             }
         }
 

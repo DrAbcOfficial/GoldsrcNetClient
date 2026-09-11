@@ -80,7 +80,7 @@ public partial class GoldsrcConnection
             }
             else if (dataType == (byte)ServerMessageType.UpdateUserInfo)
             {
-                if (!HandleUpdateUserInfo(reader)) return;
+                if (!HandleUpdateUserInfo(ctx, reader)) return;
             }
             else if (dataType == (byte)ServerMessageType.ResourceRequest)
             {
@@ -366,10 +366,14 @@ public partial class GoldsrcConnection
 
         byte[] crcBytes = new byte[4];
         BitConverter.GetBytes(si.Munge3WorldmapCrc).CopyTo(crcBytes, 0);
-        // The worldmap CRC is munged with the full bitwise-NOT of the player slot
-        // (no byte masking — Munge3 keys are full ints).
-        int unmungeKey = ~ctx.PlayerNumber;
-        Logger.LogDebug($"[ServerInfo] proto={si.ProtocolVersion}, spawnCount={si.SpawnCount}, maxClients={si.MaxClients}, playerNum={si.PlayerNumber}, worldmapCrcRaw=0x{si.Munge3WorldmapCrc:X8}, unmungeKey={unmungeKey}");
+        // The worldmap CRC is munged with an 8-bit key: the server uses
+        // COM_Munge3(..., (-1 - playernum) & 0xFF) (ReHLDS SV_SendServerinfo,
+        // Xash3D same). A wider key does not invert it and corrupts the CRC we
+        // echo back in the spawn command — the server's periodic
+        // SV_CheckMapDifferences then flags us as overflowed ("Reliable channel
+        // overflowed") within ~5 seconds.
+        int unmungeKey = (-1 - ctx.PlayerNumber) & 0xFF;
+        Logger.LogDebug($"[ServerInfo] proto={si.ProtocolVersion}, spawnCount={si.SpawnCount}, maxClients={si.MaxClients}, playerNum={si.PlayerNumber}, worldmapCrcRaw=0x{si.Munge3WorldmapCrc:X8}, unmungeKey=0x{unmungeKey:X2}");
         MungeEngine.UnMunge3(crcBytes, 4, unmungeKey);
         ctx.WorldmapCrc = BitConverter.ToUInt32(crcBytes);
         Logger.LogDebug($"[ServerInfo] worldmapCrcUnMunged=0x{ctx.WorldmapCrc:X8}");
@@ -521,17 +525,23 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private bool HandleUpdateUserInfo(MessageReader reader)
+    private bool HandleUpdateUserInfo(ConnectionContext ctx, MessageReader reader)
     {
         if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[UpdateUserInfo] buffer overflow at byte 1"); return false; }
+        byte slot = reader.Data[reader.Offset];
         reader.Offset += 1;
         if (reader.Offset + 4 > reader.Size) { Logger.LogWarning("[UpdateUserInfo] buffer overflow at byte 4"); return false; }
         reader.Offset += 4;
         string uui = reader.ReadString();
-        UserInfo = uui;
-        Logger.LogDebug($"[UpdateUserInfo] userInfo=\"{uui[..Math.Min(uui.Length, 100)]}\"");
         if (reader.Offset + 16 > reader.Size) { Logger.LogWarning("[UpdateUserInfo] buffer overflow at 16"); return false; }
         reader.Offset += 16;
+        Logger.LogDebug($"[UpdateUserInfo] slot={slot}, userInfo=\"{uui[..Math.Min(uui.Length, 100)]}\"");
+
+        // The server broadcasts this message for every player. Only adopt the
+        // server-normalized copy of OUR userinfo — other slots belong to other
+        // clients and must never overwrite the local settings.
+        if (slot == ctx.PlayerNumber)
+            UserInfo = uui;
         return true;
     }
 
@@ -633,8 +643,10 @@ public partial class GoldsrcConnection
 
     /// <summary>
     /// Sends the final <c>spawn &lt;count&gt; &lt;mungedCrc&gt;</c> stringcmd of the
-    /// sign-on sequence. The CRC is the decrypted worldmap CRC re-munged with the
-    /// bitwise-NOT of the spawn count. Fires once per connection.
+    /// sign-on sequence. The CRC is the decrypted worldmap CRC re-munged with an
+    /// 8-bit key — the server unmunges with COM_UnMunge2(..., (-1 - spawncount) &amp; 0xFF)
+    /// and SV_CheckMapDifferences drops the connection (as a fake overflow) if the
+    /// recovered value does not match the real worldmap CRC. Fires once per connection.
     /// </summary>
     private void TrySendSpawn(ConnectionContext ctx)
     {
@@ -645,8 +657,8 @@ public partial class GoldsrcConnection
         uint spawnCount = ctx.SpawnCount;
         int rawCrc = (int)ctx.WorldmapCrc;
         byte[] crcBytes = BitConverter.GetBytes(rawCrc);
-        int mungeKey = ~(int)spawnCount;
-        Logger.LogDebug($"[SignOn] spawn: rawCrc=0x{rawCrc:X8}, mungeKey=0x{mungeKey:X8} (spawnCount={spawnCount})");
+        int mungeKey = (-1 - (int)spawnCount) & 0xFF;
+        Logger.LogDebug($"[SignOn] spawn: rawCrc=0x{rawCrc:X8}, mungeKey=0x{mungeKey:X2} (spawnCount={spawnCount})");
         MungeEngine.Munge2(crcBytes, 4, mungeKey);
         int mungedCrc = BitConverter.ToInt32(crcBytes, 0);
         var spawnCmd = $"spawn {spawnCount} {mungedCrc}";

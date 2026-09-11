@@ -79,6 +79,23 @@ public sealed class UserMessageRegistry
         return true;
     }
 
+    /// <summary>
+    /// Tries to get the raw declared size byte for a user message index as sent by
+    /// <c>svc_newusermsg</c>: 1-254 = fixed payload size, 0 = fixed zero-size,
+    /// 255 = variable length (a length byte precedes the payload on the wire).
+    /// Returns false when the index is unknown.
+    /// </summary>
+    public bool TryGetDeclaredSize(byte index, out byte size)
+    {
+        if (!_messages.TryGetValue(index, out var reg))
+        {
+            size = 0;
+            return false;
+        }
+        size = reg.Size;
+        return true;
+    }
+
     /// <summary>All registered user messages, ordered by index.</summary>
     public IEnumerable<(byte Index, string Name, byte Size)> Entries =>
         _messages.OrderBy(kv => kv.Key).Select(kv => (kv.Key, kv.Value.Name, kv.Value.Size));

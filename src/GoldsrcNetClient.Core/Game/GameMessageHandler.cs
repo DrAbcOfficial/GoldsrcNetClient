@@ -1,6 +1,7 @@
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
+using Microsoft.Extensions.Logging;
 
 namespace GoldsrcNetClient.Core.Game;
 
@@ -57,34 +58,34 @@ public abstract class GameMessageHandler : IServerMessageHandler
         {
             Registry.TryGetName(messageType, out var name);
 
-            if (Registry.TryGetSize(messageType, out var size))
+            if (Registry.TryGetSize(messageType, out var fixedSize))
             {
-                // Fixed-size registration: dispatch over a bounded view of the payload
-                // and always consume exactly the registered length, so a mis-parsed
-                // message can never desynchronise the surrounding stream.
-                int payloadEnd = Math.Min(reader.Offset + size, reader.Size);
-                var bounded = new MessageReader(reader.Data[reader.Offset..payloadEnd]);
-
-                if (name != null)
-                    DispatchUserMessage(connection, messageType, name, bounded);
-
-                OnRawUserMessage?.Invoke(new RawUserMessage(messageType, name ?? "unknown", bounded.Data[bounded.Offset..bounded.Size]));
-                reader.Offset = payloadEnd;
+                // Fixed-size registration: the payload directly follows the index byte.
+                DispatchUserMessageRange(connection, messageType, name, reader, fixedSize, out var handled);
+                if (!handled)
+                    LogUnknownUserMessage(connection, messageType, name);
                 return true;
             }
 
-            if (Registry.TryGetName(messageType, out name))
+            int payloadLen;
+            if (Registry.TryGetDeclaredSize(messageType, out var declared) && declared == 0)
             {
-                // Variable-length registration: game-specific layouts are parsed by
-                // the handler; whatever it leaves is treated as the tail of the block.
-                if (DispatchUserMessage(connection, messageType, name!, reader))
-                    return true;
+                // Zero-size registration: index byte only — no length byte, no payload.
+                payloadLen = 0;
+            }
+            else
+            {
+                // Variable-length registration (declared 255) carries a length byte
+                // after the index. Unregistered indices use the same framing as a
+                // best effort so the surrounding stream stays in sync.
+                if (name == null)
+                    connection.Logger.LogDebug("[UserMsg] unregistered index 0x{Index:X2}, assuming length-prefixed payload", messageType);
+                payloadLen = reader.Offset < reader.Size ? reader.Data[reader.Offset++] : 0;
             }
 
-            var raw = new RawUserMessage(messageType, name ?? "unknown",
-                reader.Data[reader.Offset..reader.Size]);
-            OnRawUserMessage?.Invoke(raw);
-            reader.Offset = reader.Size;
+            DispatchUserMessageRange(connection, messageType, name, reader, payloadLen, out var handledVariable);
+            if (!handledVariable)
+                LogUnknownUserMessage(connection, messageType, name);
             return true;
         }
 
@@ -92,6 +93,38 @@ public abstract class GameMessageHandler : IServerMessageHandler
             return true;
 
         return false;
+    }
+
+    /// <summary>
+    /// Dispatches the next <paramref name="payloadLen"/> bytes of the stream as one
+    /// user message over a bounded reader, then consumes exactly those bytes. The
+    /// bounded view guarantees a mis-parsing handler can never desynchronise the
+    /// surrounding message stream.
+    /// </summary>
+    private void DispatchUserMessageRange(
+        GoldsrcConnection connection,
+        byte index,
+        string? name,
+        MessageReader reader,
+        int payloadLen,
+        out bool handled)
+    {
+        int payloadEnd = Math.Min(reader.Offset + payloadLen, reader.Size);
+        var bounded = new MessageReader(reader.Data[reader.Offset..payloadEnd]);
+
+        handled = name != null && DispatchUserMessage(connection, index, name, bounded);
+        if (!handled)
+        {
+            var raw = new RawUserMessage(index, name ?? "unknown", bounded.Data[bounded.Offset..bounded.Size].ToArray());
+            OnRawUserMessage?.Invoke(raw);
+        }
+
+        reader.Offset = payloadEnd;
+    }
+
+    private static void LogUnknownUserMessage(GoldsrcConnection connection, byte index, string? name)
+    {
+        connection.Logger.LogDebug("[UserMsg] {Name} (0x{Index:X2}) not handled by game handler", name ?? "unknown", index);
     }
 
     /// <summary>

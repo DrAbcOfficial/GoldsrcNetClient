@@ -1,4 +1,5 @@
 using GoldsrcNetClient.Core.Delta;
+using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Munge;
 using GoldsrcNetClient.Core.Network;
@@ -34,6 +35,93 @@ public class MungeTests
 
         MungeEngine.UnMunge3(data, data.Length, 0xFF);
         Assert.Equal(original, data);
+    }
+}
+
+/// <summary>
+/// Pins the worldmap-CRC echo protocol against the server-side reference
+/// (ReHLDS): SV_SendServerinfo munges the CRC with COM_Munge3 key
+/// (-1 - playernum) &amp; 0xFF; SV_Spawn_f unmunges our echo with COM_UnMunge2
+/// key (-1 - spawncount) &amp; 0xFF; SV_CheckMapDifferences drops the client
+/// (as a fake "Reliable channel overflowed") if the recovered value differs
+/// from the real worldmap CRC. All keys are 8-bit — a 32-bit key silently
+/// corrupts the round trip.
+/// </summary>
+public class SpawnCrcProtocolTests
+{
+    private static byte[] ServerMungeWorldmapCrc(uint worldmapCrc, int playernum)
+    {
+        byte[] buf = BitConverter.GetBytes((int)worldmapCrc);
+        MungeEngine.Munge3(buf, 4, (-1 - playernum) & 0xFF);
+        return buf;
+    }
+
+    private static uint ClientUnmungeWorldmapCrc(byte[] wire, int playernum)
+    {
+        byte[] buf = (byte[])wire.Clone();
+        MungeEngine.UnMunge3(buf, 4, (-1 - playernum) & 0xFF);
+        return BitConverter.ToUInt32(buf);
+    }
+
+    private static byte[] ClientMungeSpawnCrc(uint worldmapCrc, uint spawnCount, bool eightBitKey)
+    {
+        byte[] buf = BitConverter.GetBytes((int)worldmapCrc);
+        int key = eightBitKey ? (-1 - (int)spawnCount) & 0xFF : ~(int)spawnCount;
+        MungeEngine.Munge2(buf, 4, key);
+        return buf;
+    }
+
+    private static uint ServerUnmungeSpawnCrc(byte[] wire, uint spawnCount)
+    {
+        byte[] buf = (byte[])wire.Clone();
+        MungeEngine.UnMunge2(buf, 4, (-1 - (int)spawnCount) & 0xFF);
+        return BitConverter.ToUInt32(buf);
+    }
+
+    [Theory]
+    [InlineData(0x1A2B3C4Du, 0, 1139u)]
+    [InlineData(0xDEADBEEFu, 5, 1150u)]
+    [InlineData(0x00000000u, 23, 1u)]
+    [InlineData(0xFFFFFFFFu, 12, 256u)]
+    public void SpawnCrc_Roundtrip_With8BitKeys_RecoversWorldmapCrc(uint worldmapCrc, int playernum, uint spawnCount)
+    {
+        byte[] wireServerInfo = ServerMungeWorldmapCrc(worldmapCrc, playernum);
+        uint clientCrc = ClientUnmungeWorldmapCrc(wireServerInfo, playernum);
+        Assert.Equal(worldmapCrc, clientCrc);
+
+        byte[] wireSpawn = ClientMungeSpawnCrc(clientCrc, spawnCount, eightBitKey: true);
+        uint serverRecovered = ServerUnmungeSpawnCrc(wireSpawn, spawnCount);
+        Assert.Equal(worldmapCrc, serverRecovered);
+    }
+
+    [Fact]
+    public void SpawnCrc_With32BitKey_DoesNotRoundtrip()
+    {
+        // Regression guard: the pre-fix client used the full 32-bit ~spawnCount
+        // as the Munge2 key. The server unmunges with the 8-bit key, recovers a
+        // corrupted crcValue, and SV_CheckMapDifferences flags the channel as
+        // overflowed within ~5 seconds ("Reliable channel overflowed").
+        const uint worldmapCrc = 0x1A2B3C4D;
+        const uint spawnCount = 1150;
+
+        byte[] wireSpawn = ClientMungeSpawnCrc(worldmapCrc, spawnCount, eightBitKey: false);
+        uint serverRecovered = ServerUnmungeSpawnCrc(wireSpawn, spawnCount);
+        Assert.NotEqual(worldmapCrc, serverRecovered);
+    }
+
+    [Fact]
+    public void ServerInfo_With32BitUnMunge3Key_DoesNotRecoverWorldmapCrc()
+    {
+        // The pre-fix client also unmunged svc_serverinfo with the full 32-bit
+        // ~playernum, so the stored WorldmapCrc was garbage before the spawn
+        // echo was even built.
+        const uint worldmapCrc = 0x1A2B3C4D;
+        const int playernum = 5;
+
+        byte[] wire = ServerMungeWorldmapCrc(worldmapCrc, playernum);
+        byte[] buf = (byte[])wire.Clone();
+        MungeEngine.UnMunge3(buf, 4, ~playernum);
+        Assert.NotEqual(worldmapCrc, BitConverter.ToUInt32(buf));
     }
 }
 
@@ -909,7 +997,10 @@ public class UserInfoTests
         using var conn = new GoldsrcConnection();
         Assert.Equal("GoldsrcNetClient", conn.GetUserInfo("name"));
         Assert.Equal("48", conn.GetUserInfo("protocol"));
-        Assert.Equal("20000", conn.GetUserInfo("rate"));
+        // A high rate keeps the server's reliable fragment stream (signon batch)
+        // draining fast; a slow rate lets the server-side reliable buffer overflow.
+        Assert.Equal("100000", conn.GetUserInfo("rate"));
+        Assert.Equal("1024", conn.GetUserInfo("cl_dlmax"));
         Assert.Null(conn.GetUserInfo("nonexistent"));
     }
 
@@ -1053,5 +1144,108 @@ public class Utf8EncodingTests
         var result = reader.ReadString(out byte[] raw);
         Assert.True(result);
         Assert.Equal(new byte[] { (byte)'A', (byte)'B' }, raw);
+    }
+}
+public class UserMessageFramingTests
+{
+    /// <summary>Builds the payload of an svc_newusermsg registration (18 bytes).</summary>
+    private static byte[] Registration(byte index, byte size, string name)
+    {
+        var nameBytes = new byte[16];
+        var nameRaw = Encoding.UTF8.GetBytes(name);
+        Array.Copy(nameRaw, nameBytes, Math.Min(nameRaw.Length, 16));
+        return [index, size, .. nameBytes];
+    }
+
+    private sealed class TestGameHandler : GameMessageHandler
+    {
+        public List<RawUserMessage> RawMessages { get; } = [];
+
+        protected override bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, MessageReader reader)
+        {
+            RawMessages.Add(new RawUserMessage(index, name, reader.Data[reader.Offset..reader.Size].ToArray()));
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Regression: a variable-length (registered 255) user message must consume
+    /// exactly index + length byte + payload — everything after it in the packet
+    /// (svc_print here) must remain parseable. Swallowing the tail desynchronised
+    /// the reliable stream and got real servers to drop the client with
+    /// "Reliable channel overflowed".
+    /// </summary>
+    [Fact]
+    public void VariableLengthMessage_ConsumesLengthPrefixAndPayloadOnly()
+    {
+        var stream = new List<byte>();
+        stream.AddRange(Registration(0x4C, 0xFF, "SayText"));
+        // After the registration block: SayText with length 4, payload 01 02 03 04,
+        // then an svc_print that must survive the SayText dispatch.
+        stream.AddRange([0x04, 0x01, 0x02, 0x03, 0x04]);
+        stream.AddRange([(byte)ServerMessageType.Print, (byte)'h', (byte)'i', 0]);
+
+        using var conn = new GoldsrcConnection();
+        var handler = new TestGameHandler();
+        handler.Registry.Register(new MessageReader(stream.ToArray(), 18));
+
+        var reader = new MessageReader(stream.ToArray(), stream.Count) { Offset = 18 };
+
+        Assert.True(handler.HandleMessage(conn, 0x4C, reader));
+        Assert.Equal(18 + 5, reader.Offset); // length byte + 4 payload bytes consumed
+        Assert.Equal((byte)ServerMessageType.Print, reader.Data[reader.Offset]);
+    }
+
+    [Fact]
+    public void VariableLengthMessage_PayloadIsDispatchedBounded()
+    {
+        // Reader sits after the index byte: length byte 3 declares three payload
+        // bytes; the 0xFF bytes behind the message must not leak into the payload.
+        var stream = new List<byte> { 0x04, 0x03, 0xAA, 0xBB, 0xCC, 0xFF, 0xFF, 0xFF };
+
+        using var conn = new GoldsrcConnection();
+        var handler = new TestGameHandler();
+        handler.Registry.Register(new MessageReader(Registration(0x4C, 0xFF, "SayText")));
+        var reader = new MessageReader(stream.ToArray(), stream.Count) { Offset = 1 };
+
+        Assert.True(handler.HandleMessage(conn, 0x4C, reader));
+        var raw = Assert.Single(handler.RawMessages);
+        Assert.Equal("SayText", raw.Name);
+        Assert.Equal(new byte[] { 0xAA, 0xBB, 0xCC }, raw.Data);
+        Assert.Equal(5, reader.Offset);
+    }
+
+    [Fact]
+    public void ZeroSizeMessage_ConsumesIndexByteOnly()
+    {
+        // Registered with size 0: no length byte, no payload. The svc_print byte
+        // behind it must remain parseable (it used to be swallowed whole).
+        // Byte 0 is the message index slot the caller has already consumed.
+        var stream = new List<byte> { 0x50, (byte)ServerMessageType.Print, (byte)'x', 0 };
+
+        using var conn = new GoldsrcConnection();
+        var handler = new TestGameHandler();
+        handler.Registry.Register(new MessageReader(Registration(0x50, 0x00, "InitHUD")));
+
+        var reader = new MessageReader(stream.ToArray(), stream.Count) { Offset = 1 };
+        Assert.True(handler.HandleMessage(conn, 0x50, reader));
+        Assert.Equal(1, reader.Offset);
+        Assert.Equal((byte)ServerMessageType.Print, reader.Data[reader.Offset]);
+    }
+
+    [Fact]
+    public void FixedSizeMessage_ConsumesRegisteredLength()
+    {
+        // Byte 0 is the index slot; payload byte 0x64; then an intact svc_print.
+        var stream = new List<byte> { 0x47, 0x64, (byte)ServerMessageType.Print, (byte)'x', 0 };
+
+        using var conn = new GoldsrcConnection();
+        var handler = new TestGameHandler();
+        handler.Registry.Register(new MessageReader(Registration(0x47, 0x01, "Health")));
+
+        var reader = new MessageReader(stream.ToArray(), stream.Count) { Offset = 1 };
+        Assert.True(handler.HandleMessage(conn, 0x47, reader));
+        Assert.Equal(2, reader.Offset);
+        Assert.Equal((byte)ServerMessageType.Print, reader.Data[reader.Offset]);
     }
 }

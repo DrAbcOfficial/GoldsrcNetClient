@@ -177,6 +177,23 @@ public partial class GoldsrcConnection
             byte[]? message = TryDecompressBz2(assembled);
             if (message != null)
                 ProcessConnected(ep, message);        }
+
+        // Acknowledge every packet as soon as it is processed, exactly like the engine
+        // client (which emits an ack on its next frame). Acking only on the keepalive
+        // cadence lets the server's outgoing reliable buffer grow faster than it is
+        // drained during the sign-on flood, which ends in a "Reliable channel
+        // overflowed" drop.
+        SendAckPacket(ep);
+    }
+
+    /// <summary>Sends an acknowledgement-only packet for the current incoming sequences.</summary>
+    private void SendAckPacket(IPEndPoint ep)
+    {
+        lock (_chanLock)
+        {
+            if (_contexts.TryGetValue(ep, out var ctx))
+                TransmitLocked(ep, ctx, null, CancellationToken.None);
+        }
     }
 
     /// <summary>
