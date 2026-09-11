@@ -20,15 +20,12 @@ public static class MessageConstants
     /// <summary>Maximum number of concurrent fragment streams supported.</summary>
     public const int MaxFragmentStreams = 2;
 
-    /// <summary>Flag OR'd with the source sequence to mark a packet as a command/stringcmd.</summary>
-    public const uint SequenceModeCommand = 0x80000000;
+    /// <summary>Bit 31 of a connected packet's sequence field: the packet carries reliable payload data.</summary>
+    public const uint SequenceFlagReliable = 0x80000000;
 
-    /// <summary>Flag OR'd with the source sequence to mark a packet as a fragment.</summary>
-    public const uint SequenceModeFragment = 0x40000000;
+    /// <summary>Bit 30 of a connected packet's sequence field: the packet contains fragment stream headers.</summary>
+    public const uint SequenceFlagFragment = 0x40000000;
 
-    /// <summary>Bitmask applied to sequence numbers to strip mode flags.</summary>
+    /// <summary>Bitmask applied to sequence numbers to strip the flag bits.</summary>
     public const uint SequenceMask = 0x3FFFFFFF;
-
-    /// <summary>Constant 8-byte value sent in acknowledgement (keep-alive) packets.</summary>
-    public const ulong AckData = 0x0101010101010101UL;
 }

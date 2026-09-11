@@ -100,23 +100,6 @@ public struct NewUserMsgData
 }
 
 /// <summary>
-/// Header for a single fragment within a split packet.
-/// Marshalled directly from the raw packet bytes.
-/// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct FragHead
-{
-    /// <summary>Total number of fragments in this stream.</summary>
-    public ushort To;
-    /// <summary>Index of this fragment (0-based).</summary>
-    public ushort At;
-    /// <summary>Byte offset where this fragment's data starts in the reassembled message.</summary>
-    public ushort StartPosition;
-    /// <summary>Size of this fragment's payload in bytes.</summary>
-    public ushort Size;
-}
-
-/// <summary>
 /// Describes a single resource (map, model, sound, etc.) in the server's resource list.
 /// </summary>
 public struct ResourceInfo
@@ -192,23 +175,5 @@ public struct DeltaType
         DeltaName = deltaName;
         FieldAmount = fieldAmount;
         Fields = fields;
-    }
-}
-
-/// <summary>
-/// Represents a registered user message type from the server.
-/// </summary>
-public struct UserMessage
-{
-    /// <summary>Size of the message data (or 0xFF for variable size).</summary>
-    public byte Size;
-    /// <summary>Message name as raw bytes (up to 16).</summary>
-    public byte[] Name;
-
-    /// <summary>Initializes a new <see cref="UserMessage"/> with default values.</summary>
-    public UserMessage()
-    {
-        Size = 0;
-        Name = new byte[16];
     }
 }

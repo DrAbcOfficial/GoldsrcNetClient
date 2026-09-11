@@ -1,16 +1,5 @@
 namespace GoldsrcNetClient.Core.Protocol;
 
-/// <summary>Identifies the type of a received GoldSrc network packet based on its 4-byte header.</summary>
-public enum PacketType
-{
-    /// <summary>Connectionless packet (header = 0xFFFFFFFF). Used for challenge/connect handshake.</summary>
-    Connectionless = -1,
-    /// <summary>Split/fragmented packet (header = 0xFFFFFFFE). Large messages split across multiple UDP datagrams.</summary>
-    Split = -2,
-    /// <summary>Connected (sequenced) packet. Used for all in-game communication after the handshake.</summary>
-    Connected = 0
-}
-
 /// <summary>Connection session state machine steps.</summary>
 public enum SessionState
 {

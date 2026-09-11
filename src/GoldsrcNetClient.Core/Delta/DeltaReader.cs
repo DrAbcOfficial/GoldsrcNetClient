@@ -1,11 +1,20 @@
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Util;
 
-namespace GoldsrcNetClient.Core.Network;
+namespace GoldsrcNetClient.Core.Delta;
 
-public partial class GoldsrcConnection
+/// <summary>
+/// Reads delta-compressed records from a bitstream: a 3-bit byte-count prefix,
+/// a per-field presence bitmap, then one encoded value per marked field
+/// (string fields are read as null-terminated 8-bit strings).
+/// </summary>
+public static class DeltaReader
 {
-    internal static bool ParseDeltaFields(DeltaType dt, byte[] data, int size, ref int bitIdx)
+    /// <summary>
+    /// Skips one delta-compressed record of type <paramref name="dt"/> at the given
+    /// bit position, advancing <paramref name="bitIdx"/> past it.
+    /// </summary>
+    public static bool ReadFields(DeltaType dt, byte[] data, int size, ref int bitIdx)
     {
         uint byteCount = 0;
         if (!BitReader.ReadBits(data, ref bitIdx, size, ref byteCount, 3))
@@ -54,7 +63,11 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    internal static bool ParseDeltaFieldDescriptions(byte[] data, int size, ref int bitIdx)
+    /// <summary>
+    /// Skips one delta_description_t field entry (the payload of
+    /// svc_deltadescription fields), advancing <paramref name="bitIdx"/> past it.
+    /// </summary>
+    public static bool ReadFieldDescription(byte[] data, int size, ref int bitIdx)
     {
         uint fieldType = 0;
         if (!BitReader.ReadBits(data, ref bitIdx, size, ref fieldType, 32)) return false;

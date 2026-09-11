@@ -1,6 +1,6 @@
 using System.Collections.ObjectModel;
-using System.Text;
-using GoldsrcNetClient.Core.Network;
+using GoldsrcNetClient.Core.Handshake;
+using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.SteamProvider;
 using GoldsrcNetClient.Tui.Services;
 using Terminal.Gui.App;
@@ -170,7 +170,7 @@ public sealed class SettingsView : View
 
     public void ApplyUserInfo()
     {
-        var data = new UserInfoData
+        UserInfoData data = new()
         {
             Name = _nameTf.Text ?? "",
             Model = _modelTf.Text ?? "",
@@ -181,15 +181,14 @@ public sealed class SettingsView : View
         };
         _userInfoStore.Save(data);
 
-        StringBuilder sb = new StringBuilder();
-        sb.Append("\\name\\").Append(data.Name);
-        sb.Append("\\model\\").Append(data.Model);
-        sb.Append("\\topcolor\\").Append(data.TopColor);
-        sb.Append("\\bottomcolor\\").Append(data.BottomColor);
-        sb.Append("\\rate\\").Append(data.Rate);
-        sb.Append("\\cl_updaterate\\").Append(data.ClUpdaterate);
-        sb.Append("\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\hltv\\0");
-        _appData.UserInfo = sb.ToString();
+        UserInfoString info = new("\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\hltv\\0");
+        info.Set("name", data.Name);
+        info.Set("model", data.Model);
+        info.Set("topcolor", data.TopColor);
+        info.Set("bottomcolor", data.BottomColor);
+        info.Set("rate", data.Rate);
+        info.Set("cl_updaterate", data.ClUpdaterate);
+        _appData.UserInfo = info.ToString();
     }
 
     private static string RenderQrCode(string url)

@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using GoldsrcNetClient.Core.Game;
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Tui.Models;
@@ -76,14 +76,17 @@ public sealed class ConnectionManager : IDisposable
             cs.HudTextPro += ev => Emit($"[HudTextPro] {ev.TextCode}");
         }
 
-        var tuiHandler = new TuiMessageHandler(this);
-        _gameHandler.Next = tuiHandler;
-
         var logger = new GlobalLogger<GoldsrcConnection>();
         var resolvedProvider = _authProvider ?? new NoSteamAuthProvider();
         Emit($"Auth: {resolvedProvider.GetType().Name} (IsAvailable={resolvedProvider.IsAvailable})");
         _connection = new GoldsrcConnection(logger, resolvedProvider, _gameHandler);
         _connection.UserInfo = userInfo;
+
+        // Console output, center prints, and server-initiated disconnects are handled
+        // by the built-in Core processing and surfaced here via events.
+        _connection.OnConsolePrint += msg => Emit($"[Print] {msg}");
+        _connection.OnCenterPrint += msg => Emit($"[CenterPrint] {msg}");
+        _connection.OnServerDisconnect += HandleDisconnect;
 
         _connection.OnServerInfo += (conn, info) =>
         {
@@ -225,12 +228,7 @@ public sealed class ConnectionManager : IDisposable
         if (_connection == null || _state != ConnectionState.Connected) return;
         try
         {
-            var data = new List<byte>();
-            data.AddRange(System.Text.Encoding.UTF8.GetBytes(name));
-            data.Add(0);
-            data.AddRange(System.Text.Encoding.UTF8.GetBytes(value));
-            data.Add(0);
-            await _connection.SendCommandAsync(ClientCommandType.CvarValue, data.ToArray(), _cts?.Token ?? default);
+            await _connection.SendCvarValueAsync(name, value);
         }
         catch (Exception ex)
         {
@@ -243,13 +241,7 @@ public sealed class ConnectionManager : IDisposable
         if (_connection == null || _state != ConnectionState.Connected) return;
         try
         {
-            var data = new List<byte>();
-            data.AddRange(BitConverter.GetBytes(requestId));
-            data.AddRange(System.Text.Encoding.UTF8.GetBytes(name));
-            data.Add(0);
-            data.AddRange(System.Text.Encoding.UTF8.GetBytes(value));
-            data.Add(0);
-            await _connection.SendCommandAsync(ClientCommandType.CvarValue2, data.ToArray(), _cts?.Token ?? default);
+            await _connection.SendCvarValue2Async(requestId, name, value);
         }
         catch (Exception ex)
         {
@@ -262,110 +254,5 @@ public sealed class ConnectionManager : IDisposable
         _cts?.Cancel();
         _cts?.Dispose();
         _connection?.Dispose();
-    }
-
-    private sealed class TuiMessageHandler : IServerMessageHandler
-    {
-        private readonly ConnectionManager _manager;
-
-        public TuiMessageHandler(ConnectionManager manager) => _manager = manager;
-
-        public bool HandleMessage(GoldsrcConnection connection, byte messageType, MessageReader reader)
-        {
-            switch ((ServerMessageType)messageType)
-            {
-                case ServerMessageType.Print:
-                    {
-                        var msg = reader.ReadString();
-                        _manager.Emit($"[Print] {msg}");
-                        return true;
-                    }
-                case ServerMessageType.CenterPrint:
-                    {
-                        var msg = reader.ReadString();
-                        _manager.Emit($"[CenterPrint] {msg}");
-                        return true;
-                    }
-                case ServerMessageType.Exec:
-                    {
-                        var msg = reader.ReadString();
-                        _manager.Emit($"[Exec] {msg}");
-                        return true;
-                    }
-                case ServerMessageType.Disconnect:
-                    {
-                        var reason = reader.ReadString();
-                        _manager.HandleDisconnect(reason);
-                        reader.Offset = reader.Size;
-                        return true;
-                    }
-                case ServerMessageType.SendCvarValue:
-                    {
-                        var cvarName = reader.ReadString();
-                        var value = connection.Settings.GetDefaultCvarValue(cvarName);
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await connection.SendCommandAsync(
-                                    ClientCommandType.CvarValue,
-                                    [.. System.Text.Encoding.UTF8.GetBytes(cvarName), 0, .. System.Text.Encoding.UTF8.GetBytes(value), 0]);
-                            }
-                            catch { }
-                        });
-                        return true;
-                    }
-                case ServerMessageType.SendCvarValue2:
-                    {
-                        if (reader.Remaining < 4) return true;
-                        var requestId = BitConverter.ToInt32(reader.Data, reader.Offset);
-                        reader.Offset += 4;
-                        var cvarName = reader.ReadString();
-                        var value = connection.Settings.GetDefaultCvarValue(cvarName);
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                var data = new List<byte>();
-                                data.AddRange(BitConverter.GetBytes(requestId));
-                                data.AddRange(System.Text.Encoding.UTF8.GetBytes(cvarName));
-                                data.Add(0);
-                                data.AddRange(System.Text.Encoding.UTF8.GetBytes(value));
-                                data.Add(0);
-                                await connection.SendCommandAsync(ClientCommandType.CvarValue2, data.ToArray());
-                            }
-                            catch { }
-                        });
-                        return true;
-                    }
-                case ServerMessageType.ResourceRequest:
-                    {
-                        if (reader.Remaining >= 8)
-                        {
-                            reader.Offset += 8;
-                            byte[] rawData = connection.ResourceListRawBytes;
-                            _ = Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    if (rawData.Length > 0)
-                                    {
-                                        var payload = new byte[rawData.Length];
-                                        Array.Copy(rawData, payload, rawData.Length);
-                                        await connection.SendCommandAsync(ClientCommandType.ResourceList, payload);
-                                    }
-                                    else
-                                    {
-                                        await connection.SendCommandAsync(ClientCommandType.ResourceList, [0, 0]);
-                                    }
-                                }
-                                catch { }
-                            });
-                        }
-                        return true;
-                    }
-            }
-            return false;
-        }
     }
 }

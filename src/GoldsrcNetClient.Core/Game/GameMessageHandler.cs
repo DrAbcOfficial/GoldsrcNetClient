@@ -143,22 +143,18 @@ public abstract class GameMessageHandler : IServerMessageHandler
         return raw / 8.0f;
     }
 
-    /// <summary>Reads a signed 16-bit integer from the reader.</summary>
+    /// <summary>Reads a signed 16-bit integer from the reader (0 on overflow).</summary>
     protected static short ReadShort(MessageReader reader)
     {
-        if (reader.Remaining < 2) return 0;
-        short v = BitConverter.ToInt16(reader.Data, reader.Offset);
-        reader.Offset += 2;
-        return v;
+        reader.ReadInt16(out short value);
+        return value;
     }
 
-    /// <summary>Reads a signed 32-bit integer from the reader.</summary>
+    /// <summary>Reads a signed 32-bit integer from the reader (0 on overflow).</summary>
     protected static int ReadInt32(MessageReader reader)
     {
-        if (reader.Remaining < 4) return 0;
-        int v = BitConverter.ToInt32(reader.Data, reader.Offset);
-        reader.Offset += 4;
-        return v;
+        reader.ReadInt32(out int value);
+        return value;
     }
 
     /// <summary>Resets the message registry. Call when establishing a new connection.</summary>

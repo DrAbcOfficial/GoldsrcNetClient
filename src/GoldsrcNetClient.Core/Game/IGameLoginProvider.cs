@@ -1,3 +1,4 @@
+using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 
 namespace GoldsrcNetClient.Core.Game;

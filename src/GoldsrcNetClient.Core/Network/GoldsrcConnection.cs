@@ -1,5 +1,6 @@
+using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Messages;
-using GoldsrcNetClient.Core.Munge;
+using GoldsrcNetClient.Core.Netchan;
 using GoldsrcNetClient.Core.Protocol;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -12,9 +13,11 @@ namespace GoldsrcNetClient.Core.Network;
 
 /// <summary>
 /// Main entry point for the GoldSrc (Half-Life 1) engine network client.
-/// Handles the full connection handshake (getchallenge → connect → connected),
-/// server message processing, packet Munge/UnMunge encryption, delta compression parsing,
-/// and resource list decoding. Supports both WON and Steam authentication protocols.
+/// Orchestrates the UDP transport, the connection handshake
+/// (getchallenge → connect → connected), the per-endpoint sequenced channel
+/// (netchan), and connected server-message processing (Munge decryption, delta
+/// compression parsing, resource list decoding). Supports both WON and Steam
+/// authentication protocols.
 /// </summary>
 /// <remarks>
 /// Usage:
@@ -27,27 +30,37 @@ namespace GoldsrcNetClient.Core.Network;
 /// </remarks>
 public partial class GoldsrcConnection : IDisposable
 {
-    private static readonly byte[] GetChallengeSteamPacket =
-        [0xFF, 0xFF, 0xFF, 0xFF, (byte)'g', (byte)'e', (byte)'t', (byte)'c', (byte)'h', (byte)'a', (byte)'l', (byte)'l', (byte)'e', (byte)'n', (byte)'g', (byte)'e', (byte)' ', (byte)'s', (byte)'t', (byte)'e', (byte)'a', (byte)'m', (byte)'\n'];
-    private static readonly byte[] GetChallengePacket =
-        [0xFF, 0xFF, 0xFF, 0xFF, (byte)'g', (byte)'e', (byte)'t', (byte)'c', (byte)'h', (byte)'a', (byte)'l', (byte)'l', (byte)'e', (byte)'n', (byte)'g', (byte)'e', (byte)'\n'];
+    /// <summary>Per-endpoint session: session data, sequenced channel, and handshake state.</summary>
+    private sealed class Session(IPEndPoint endpoint)
+    {
+        public ConnectionContext Context { get; } = new()
+        {
+            ServerIp = BitConverter.ToUInt32(endpoint.Address.GetAddressBytes()),
+            ServerPort = (ushort)endpoint.Port
+        };
 
-    internal const byte AuthProtocolSteam = 3;
-    internal const byte AuthProtocolWon = 1;
-    internal const byte AuthProtocolHashedCdKey = 2;
+        public required NetchanChannel Channel { get; init; }
+
+        public SessionState State = SessionState.GetChallenge;
+    }
+
+    private static readonly IPEndPoint DummyEndpoint = new(0, 0);
 
     private readonly UdpClient _socket;
-    private readonly Dictionary<IPEndPoint, SessionState> _sessions = [];
-    private readonly Dictionary<IPEndPoint, ConnectionContext> _contexts = [];
+    private readonly Dictionary<IPEndPoint, Session> _sessions = [];
     private readonly ISteamAuthProvider _authProvider;
     private readonly IServerMessageHandler _messageHandler;
-    internal readonly ILogger<GoldsrcConnection> Logger;
+    private readonly HandshakeNegotiator _handshake;
+    private readonly Dictionary<byte, MessageParser> _messageParsers;
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private CancellationTokenSource? _keepAliveCts;
+
     private IPEndPoint? _activeEndpoint;
     private bool _sentContinueLoading;
     private bool _sentSpawn;
-    private CancellationTokenSource? _moveCts;
-    private Task? _moveTask;
+    private UserInfoString _userInfo;
+
+    internal readonly ILogger<GoldsrcConnection> Logger;
 
     /// <summary>Raised when the server disconnects the client, with the server-supplied reason.</summary>
     public event Action<string>? OnServerDisconnect;
@@ -57,6 +70,11 @@ public partial class GoldsrcConnection : IDisposable
     /// (chat for text-only mods, kick/drop notices, rule changes, etc.).
     /// </summary>
     public event Action<string>? OnConsolePrint;
+
+    /// <summary>
+    /// Raised for every <c>svc_centerprint</c> message the server sends.
+    /// </summary>
+    public event Action<string>? OnCenterPrint;
 
     /// <summary>
     /// Configurable engine behavior settings. Modify before or during a connection
@@ -70,15 +88,13 @@ public partial class GoldsrcConnection : IDisposable
     /// </summary>
     public uint SpawnCount
     {
-        get => _contexts.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var ctx) ? ctx.SpawnCount : 0;
+        get => _sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session) ? session.Context.SpawnCount : 0;
         set
         {
-            if (_contexts.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var ctx))
-                ctx.SpawnCount = value;
+            if (_sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session))
+                session.Context.SpawnCount = value;
         }
     }
-
-    private static readonly IPEndPoint DummyEndpoint = new(0, 0);
 
     /// <summary>Delegate for <see cref="OnServerInfo"/> events.</summary>
     /// <param name="conn">The connection that received the server info.</param>
@@ -110,7 +126,7 @@ public partial class GoldsrcConnection : IDisposable
     /// </summary>
     public byte[] ResourceListRawBytes
     {
-        get => _contexts.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var ctx) ? ctx.ResourceListRawBytes : [];
+        get => _sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session) ? session.Context.ResourceListRawBytes : [];
     }
 
     /// <summary>Delegate for <see cref="OnDataPacket"/> events.</summary>
@@ -147,45 +163,21 @@ public partial class GoldsrcConnection : IDisposable
     /// therefore negotiate a high rate, and the server clamps it to
     /// <c>sv_maxrate</c> anyway.</para>
     /// </remarks>
-    public string UserInfo { get; set; } = "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_dlmax\\1024\\cl_updaterate\\60\\rate\\100000\\hltv\\0";
+    public string UserInfo
+    {
+        get => _userInfo.ToString();
+        set => _userInfo = new UserInfoString(value);
+    }
 
     /// <summary>Sets a single key-value pair in the <see cref="UserInfo"/> string.</summary>
     /// <param name="key">The key to set (case-insensitive).</param>
     /// <param name="value">The new value for the key.</param>
-    public void SetUserInfo(string key, string value)
-    {
-        var current = UserInfo;
-        var parts = current.Split('\\');
-        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        for (int i = 1; i + 1 < parts.Length; i += 2)
-            dict[parts[i]] = parts[i + 1];
-
-        dict[key] = value;
-
-        var sb = new StringBuilder();
-        foreach (var kv in dict)
-        {
-            sb.Append('\\');
-            sb.Append(kv.Key);
-            sb.Append('\\');
-            sb.Append(kv.Value);
-        }
-        UserInfo = sb.ToString();
-    }
+    public void SetUserInfo(string key, string value) => _userInfo.Set(key, value);
 
     /// <summary>Gets a value from the <see cref="UserInfo"/> string by key.</summary>
     /// <param name="key">The key to look up (case-insensitive).</param>
     /// <returns>The value string if found; <c>null</c> otherwise.</returns>
-    public string? GetUserInfo(string key)
-    {
-        var parts = UserInfo.Split('\\');
-        for (int i = 1; i + 1 < parts.Length; i += 2)
-        {
-            if (string.Equals(parts[i], key, StringComparison.OrdinalIgnoreCase))
-                return parts[i + 1];
-        }
-        return null;
-    }
+    public string? GetUserInfo(string key) => _userInfo.Get(key);
 
     /// <summary>
     /// Creates a new GoldSrc connection.
@@ -202,6 +194,10 @@ public partial class GoldsrcConnection : IDisposable
         _authProvider = authProvider ?? new NoSteamAuthProvider();
         _messageHandler = messageHandler ?? new DefaultServerMessageHandler();
         _socket = new UdpClient(localPort);
+        _handshake = new HandshakeNegotiator(_authProvider, Settings,
+            (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask(), Logger);
+        _messageParsers = BuildMessageParsers();
+        _userInfo = new UserInfoString(Settings.DefaultUserInfo);
     }
 
     /// <summary>
@@ -214,13 +210,8 @@ public partial class GoldsrcConnection : IDisposable
     /// <param name="ct">Cancellation token.</param>
     public Task SendStringCmdAsync(ClientCommandType cmd, string payload, CancellationToken ct = default)
     {
-        if (_activeEndpoint == null)
-            throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
-        var cmdBytes = new List<byte> { (byte)cmd };
-        cmdBytes.AddRange(Encoding.UTF8.GetBytes(payload));
-        cmdBytes.Add(0);
-        SendReliable(_activeEndpoint, [.. cmdBytes]);
-        return Task.CompletedTask;
+        List<byte> bytes = [(byte)cmd, .. Encoding.UTF8.GetBytes(payload), 0];
+        return SendReliableAsync([.. bytes], ct);
     }
 
     /// <summary>
@@ -231,13 +222,33 @@ public partial class GoldsrcConnection : IDisposable
     /// <param name="ct">Cancellation token.</param>
     public Task SendCommandAsync(ClientCommandType cmd, byte[] data, CancellationToken ct = default)
     {
-        if (_activeEndpoint == null)
-            throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
-        var bytes = new byte[data.Length + 1];
+        byte[] bytes = new byte[data.Length + 1];
         bytes[0] = (byte)cmd;
         data.CopyTo(bytes, 1);
-        SendReliable(_activeEndpoint, bytes);
-        return Task.CompletedTask;
+        return SendReliableAsync(bytes, ct);
+    }
+
+    /// <summary>
+    /// Replies to the server's <c>svc_sendcvarvalue</c> query with a cvar value.
+    /// </summary>
+    public Task SendCvarValueAsync(string name, string value)
+    {
+        List<byte> reply = [];
+        MessageWriter.WriteString(reply, name);
+        MessageWriter.WriteString(reply, value);
+        return SendCommandAsync(ClientCommandType.CvarValue, [.. reply]);
+    }
+
+    /// <summary>
+    /// Replies to the server's <c>svc_sendcvarvalue2</c> query with a cvar value.
+    /// </summary>
+    public Task SendCvarValue2Async(int requestId, string name, string value)
+    {
+        List<byte> reply = [];
+        MessageWriter.WriteUInt32(reply, (uint)requestId);
+        MessageWriter.WriteString(reply, name);
+        MessageWriter.WriteString(reply, value);
+        return SendCommandAsync(ClientCommandType.CvarValue2, [.. reply]);
     }
 
     /// <summary>
@@ -257,12 +268,16 @@ public partial class GoldsrcConnection : IDisposable
         var ep = new IPEndPoint(ip, port);
         _activeEndpoint = ep;
         Logger.LogDebug($"[DNS] resolved {host} -> {ep}");
-        _sessions[ep] = SessionState.GetChallenge;
-        _contexts[ep] = new ConnectionContext { ServerIp = BitConverter.ToUInt32(ep.Address.GetAddressBytes()), ServerPort = (ushort)ep.Port };
+
+        var session = new Session(ep)
+        {
+            Channel = new NetchanChannel(ep,
+                (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask(), Logger)
+        };
+        _sessions[ep] = session;
 
         Logger.LogDebug($"[State] Begin -> GetChallenge. Sending getchallenge (steam={_authProvider.IsAvailable}, authProto={_authProvider.GetAuthProtocol()})");
-        var challengePacket = _authProvider.IsAvailable ? GetChallengeSteamPacket : GetChallengePacket;
-        await _socket.SendAsync(new ReadOnlyMemory<byte>(challengePacket), ep, ct);
+        await _socket.SendAsync(_handshake.BuildGetChallengePacket(_authProvider.IsAvailable), ep, ct);
 
         StartKeepAliveTask();
 
@@ -286,8 +301,9 @@ public partial class GoldsrcConnection : IDisposable
                 int offset = 4;
                 var payload = Encoding.UTF8.GetString(data, offset, len - offset);
                 Logger.LogDebug($"connectionless: {payload[..Math.Min(payload.Length, 200)]}");
-                _sessions[ep] = await ProcessConnectionless(ep, payload, appId, ct);
-                if (_sessions[ep] == SessionState.Connected)
+                session.State = await _handshake.HandleResponseAsync(
+                    session.State, ep, appId, _userInfo.ToString(), session.Context, payload, SendStringCmdAsync, ct);
+                if (session.State == SessionState.Connected)
                 {
                     Logger.LogInformation("[State] -> Connected. Handshake complete.");
                     _connectedTcs.TrySetResult();
@@ -300,7 +316,7 @@ public partial class GoldsrcConnection : IDisposable
             else
             {
                 OnDataPacket?.Invoke(this, data.ToArray());
-                ProcessNetchanPacket(ep, data.ToArray());
+                session.Channel.ProcessIncoming(data.ToArray(), message => ProcessConnected(ep, message));
             }
         }
     }
@@ -308,24 +324,49 @@ public partial class GoldsrcConnection : IDisposable
     /// <summary>Closes the underlying UDP socket and releases all resources.</summary>
     public void Dispose()
     {
-        _moveCts?.Cancel();
-        _moveCts?.Dispose();
+        _keepAliveCts?.Cancel();
+        _keepAliveCts?.Dispose();
         _socket.Dispose();
     }
-}
 
-/// <summary>
-/// Default no-op <see cref="ISteamAuthProvider"/> that reports Steam as unavailable
-/// and provides fake authentication data for servers that do not enforce Steam auth.
-/// </summary>
-public sealed class NoSteamAuthProvider : ISteamAuthProvider
-{
-    /// <inheritdoc/>
-    public bool IsAvailable => false;
+    private Task SendReliableAsync(byte[] payload, CancellationToken ct)
+    {
+        if (_sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session))
+        {
+            session.Channel.SendReliable(payload);
+            return Task.CompletedTask;
+        }
+        throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
+    }
 
-    /// <inheritdoc/>
-    public byte GetAuthProtocol() => 3;
-
-    /// <inheritdoc/>
-    public string GetRawAuthData() => "steam";
+    /// <summary>
+    /// Background task that transmits a packet at a fixed interval. Each packet carries
+    /// acknowledgements for the server, retransmits unacknowledged reliable payload,
+    /// and keeps the netchan alive on the server's timeout radar.
+    /// </summary>
+    private void StartKeepAliveTask()
+    {
+        if (_keepAliveCts != null) return;
+        _keepAliveCts = new CancellationTokenSource();
+        var token = _keepAliveCts.Token;
+        _ = Task.Run(async () =>
+        {
+            Logger.LogDebug("[KeepAlive] starting keepalive task");
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(Settings.MoveIntervalMs, token);
+                    if (_sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session))
+                        session.Channel.SendKeepAlive();
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning($"[KeepAlive] error: {ex.Message}");
+                }
+            }
+            Logger.LogDebug("[KeepAlive] keepalive task stopped");
+        }, token);
+    }
 }

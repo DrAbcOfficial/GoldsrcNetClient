@@ -29,6 +29,21 @@ and death notices are printed live.
 | `GoldsrcNetClient.Tui` | Terminal UI front-end |
 | `GoldsrcNetClient.Test` | xunit tests |
 
+### Core layout (by responsibility)
+
+```
+Core/
+  GoldsrcConnection.cs        orchestrator: UDP socket, receive loop, events, send API
+  Handshake/                  connection establishment (challenge, connect packet, auth ticket interface)
+  Netchan/                    sequenced channel: reliability, retransmission, fragments, Munge2
+  Messages/                   message reader/writer, constants, IServerMessageHandler hook
+  Delta/                      delta-compression definitions and bitstream reader
+  Protocol/                   enums, structs, settings, UserInfoString, UserCmd encoder
+  Game/                       per-game login profiles and user-message handlers
+  Munge/                      Munge1/2/3 ciphers
+  Util/                       bit-level reader/writer
+```
+
 ## Features
 
 - Connection handshake (getchallenge → connect → approval) with Steam auth ticket

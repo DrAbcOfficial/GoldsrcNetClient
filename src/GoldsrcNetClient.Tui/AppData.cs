@@ -1,4 +1,4 @@
-using GoldsrcNetClient.Core.Network;
+using GoldsrcNetClient.Core.Handshake;
 
 namespace GoldsrcNetClient.Tui;
 

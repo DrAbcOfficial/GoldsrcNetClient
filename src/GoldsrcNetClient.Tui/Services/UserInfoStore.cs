@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 namespace GoldsrcNetClient.Tui.Services;
 
 public sealed record UserInfoData
@@ -12,57 +10,16 @@ public sealed record UserInfoData
     public string ClUpdaterate { get; init; } = "60";
 }
 
-public sealed class UserInfoStore
+public sealed class UserInfoStore(string? path = null) : JsonStore<UserInfoData>(path, "userinfo.json")
 {
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    protected override UserInfoData InitialValue => new();
 
-    private readonly string _path;
-    private readonly object _lock = new();
-    private UserInfoData _data = new();
-
-    public UserInfoData Data
-    {
-        get { lock (_lock) return _data with { }; }
-    }
-
-    public UserInfoStore(string? path = null)
-    {
-        _path = path ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "GoldsrcNetClient",
-            "userinfo.json");
-    }
-
-    public void Load()
-    {
-        lock (_lock)
-        {
-            if (File.Exists(_path))
-            {
-                try
-                {
-                    var json = File.ReadAllText(_path);
-                    _data = JsonSerializer.Deserialize<UserInfoData>(json) ?? new UserInfoData();
-                }
-                catch
-                {
-                    _data = new UserInfoData();
-                }
-            }
-        }
-    }
+    /// <summary>A defensive copy of the stored userinfo.</summary>
+    public UserInfoData Data => Read() with { };
 
     public void Save(UserInfoData data)
     {
-        lock (_lock)
-        {
-            _data = data;
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                Directory.CreateDirectory(dir);
-
-            var json = JsonSerializer.Serialize(_data, JsonOptions);
-            File.WriteAllText(_path, json);
-        }
+        Assign(data);
+        Save();
     }
 }

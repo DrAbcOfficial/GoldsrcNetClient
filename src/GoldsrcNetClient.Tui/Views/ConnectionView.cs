@@ -7,7 +7,6 @@ using GoldsrcNetClient.Tui.Services;
 using Terminal.Gui.App;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
-
 namespace GoldsrcNetClient.Tui.Views;
 
 public sealed class ConnectionView : View
@@ -158,17 +157,14 @@ public sealed class ConnectionView : View
 
     private void BuildUserInfoEditor()
     {
-        string defaultUserInfo = _appData.UserInfo;
-        string[] parts = defaultUserInfo.Split('\\');
         int y = 0;
-        for (int i = 1; i + 1 < parts.Length; i += 2)
+        foreach (var (key, value) in new UserInfoString(_appData.UserInfo).Values)
         {
-            if (parts[i] == "protocol") continue;
+            if (key == "protocol") continue;
             if (y >= 9) break;
 
-            Label lbl = new Label { Text = $"{parts[i]}:", X = 1, Y = y };
-            TextField tf = new TextField { Text = parts[i + 1], X = 18, Y = y, Width = 20 };
-            string key = parts[i];
+            Label lbl = new Label { Text = $"{key}:", X = 1, Y = y };
+            TextField tf = new TextField { Text = value, X = 18, Y = y, Width = 20 };
             tf.TextChanged += (s, args) =>
             {
                 if (_connManager.Connection != null && _connManager.State == ConnectionState.Connected)
@@ -195,16 +191,7 @@ public sealed class ConnectionView : View
         _userInfoFrame.Add(saveBtn);
     }
 
-    public void SyncUserInfoFromSettings()
-    {
-        string userInfo = _appData.UserInfo;
-        string[] parts = userInfo.Split('\\');
-        for (int i = 1; i + 1 < parts.Length; i += 2)
-        {
-            if (_userInfoFields.TryGetValue(parts[i], out TextField? tf))
-                tf.Text = parts[i + 1];
-        }
-    }
+    public void SyncUserInfoFromSettings() => ApplyUserInfoToFields(_appData.UserInfo);
 
     public void UpdateSteamInfo()
     {
@@ -222,12 +209,15 @@ public sealed class ConnectionView : View
     private void RefreshUserInfoFields()
     {
         if (_connManager.Connection == null) return;
-        string userInfo = _connManager.Connection.UserInfo;
-        string[] parts = userInfo.Split('\\');
-        for (int i = 1; i + 1 < parts.Length; i += 2)
+        ApplyUserInfoToFields(_connManager.Connection.UserInfo);
+    }
+
+    private void ApplyUserInfoToFields(string userInfo)
+    {
+        foreach (var (key, value) in new UserInfoString(userInfo).Values)
         {
-            if (_userInfoFields.TryGetValue(parts[i], out TextField? tf))
-                tf.Text = parts[i + 1];
+            if (_userInfoFields.TryGetValue(key, out TextField? tf))
+                tf.Text = value;
         }
     }
 
@@ -435,7 +425,7 @@ public sealed class ConnectionView : View
             app.Run(dialog);
             if (dialog.Confirmed)
             {
-                byte[] payload = MovePayloadBuilder.Build(
+                byte[] payload = UserCmd.Encode(
                     dialog.ForwardMove, dialog.SideMove, dialog.UpMove,
                     dialog.Buttons, dialog.Impulse);
                 _ = _connManager.Connection.SendCommandAsync(ClientCommandType.Move, payload);

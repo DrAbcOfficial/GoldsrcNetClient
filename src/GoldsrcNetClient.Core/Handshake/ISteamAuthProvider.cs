@@ -1,4 +1,4 @@
-namespace GoldsrcNetClient.Core.Network;
+namespace GoldsrcNetClient.Core.Handshake;
 
 /// <summary>
 /// Provides Steam authentication data for the GoldSrc connect handshake.

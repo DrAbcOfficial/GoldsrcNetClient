@@ -10,13 +10,15 @@ namespace GoldsrcNetClient.Core.Network;
 
 public partial class GoldsrcConnection
 {
+    /// <summary>Parses one server message; returning false aborts the rest of the packet (buffer overflow).</summary>
+    internal delegate bool MessageParser(ConnectionContext ctx, MessageReader reader);
+
     private void ProcessConnected(IPEndPoint ep, byte[] data)
     {
-        int size = data.Length;
-        var ctx = _contexts[ep];
+        var ctx = _sessions[ep].Context;
 
-        var reader = new MessageReader(data, size);
-        Logger.LogDebug($"[Connected] processing {size} bytes");
+        var reader = new MessageReader(data, data.Length);
+        Logger.LogDebug($"[Connected] processing {data.Length} bytes");
 
         while (reader.Remaining > 0)
         {
@@ -28,320 +30,300 @@ public partial class GoldsrcConnection
             if (_messageHandler.HandleMessage(this, dataType, reader))
                 continue;
 
-            if (dataType == (byte)ServerMessageType.Nop) { }
-            else if (dataType == (byte)ServerMessageType.Bad)
-            {
-                Logger.LogWarning("[Bad] server sent bad message, consuming remaining data");
-                reader.Offset = reader.Size;
-            }
-            else if (dataType == (byte)ServerMessageType.Disconnect)
-            {
-                string reason = reader.ReadString();
-                Logger.LogWarning($"[Disconnect] server disconnected: reason=\"{reason}\"");
-                reader.Offset = reader.Size;
-                OnServerDisconnect?.Invoke(reason);
-            }
-            else if (dataType == (byte)ServerMessageType.Print)
-            {
-                string msg = reader.ReadString();
-                Logger.LogDebug($"[Print] msg=\"{msg[..Math.Min(msg.Length, 200)]}\"");
-                OnConsolePrint?.Invoke(msg);
-            }
-            else if (dataType == (byte)ServerMessageType.CenterPrint)
-            {
-                string centerMsg = reader.ReadString();
-                Logger.LogDebug($"[CenterPrint] msg=\"{centerMsg}\"");
-            }
-            else if (dataType == (byte)ServerMessageType.ServerInfo)
-            {
-                if (!HandleServerInfo(ctx, reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.DeltaDescription)
-            {
-                if (!HandleDeltaDescription(reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.NewMoveVars)
-            {
-                if (!HandleNewMoveVars(reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.SetView)
-            {
-                if (reader.Offset + 2 > reader.Size) { Logger.LogWarning("[SetView] buffer overflow"); return; }
-                reader.Offset += 2;
-            }
-            else if (dataType == (byte)ServerMessageType.NewUserMsg)
-            {
-                if (!HandleNewUserMsg(reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.StuffText)
-            {
-                string st = reader.ReadString();
-                Logger.LogDebug($"[StuffText] text=\"{st[..Math.Min(st.Length, 200)]}\"");
-            }
-            else if (dataType == (byte)ServerMessageType.UpdateUserInfo)
-            {
-                if (!HandleUpdateUserInfo(ctx, reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.ResourceRequest)
-            {
-                if (!HandleResourceRequest(ctx, reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.ResourceLocation)
-            {
-                string loc = reader.ReadString();
-                Logger.LogDebug($"[ResourceLocation] location=\"{loc}\"");
-            }
-            else if (dataType == (byte)ServerMessageType.ResourceList)
-            {
-                int listStart = reader.Offset;
-                ProcessResourceList(ctx, reader);
-                int dataBytes = reader.Offset - listStart;
-                ctx.ResourceListRawBytes = reader.Data[listStart..reader.Offset];
-                Logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={dataBytes}");
-                OnResourceList?.Invoke(this, ctx.Resources);
-
-                // Resource parsing completes the client's loading phase — request
-                // the spawn now (the engine sends it at the end of resource processing).
-                TrySendSpawn(ctx);
-            }
-            else if (dataType == (byte)ServerMessageType.TempEntity)
-            {
-                if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[TempEntity] buffer overflow"); return; }
-                reader.Offset += 1;
-                for (int i = 0; i < 3; i++)
-                {
-                    if (reader.Offset + 2 > reader.Size) { Logger.LogWarning($"[TempEntity] buffer overflow at coord {i}"); return; }
-                    reader.Offset += 2;
-                }
-            }
-            else if (dataType == (byte)ServerMessageType.SpawnStaticSound)
-            {
-                reader.Offset += 14;
-            }
-            else if (dataType == (byte)ServerMessageType.SendCvarValue2)
-            {
-                if (!HandleSendCvarValue2(reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.SendCvarValue)
-            {
-                if (!HandleSendCvarValue(reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.SpawnBaseline)
-            {
-                if (!HandleSpawnBaseline(ctx, reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.Time)
-            {
-                reader.ReadSingle(out float time);
-                Logger.LogDebug($"[Time] time={time:F2}");
-            }
-            else if (dataType == (byte)ServerMessageType.LightStyle)
-            {
-                if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[LightStyle] buffer overflow"); return; }
-                reader.Offset += 1;
-                reader.ReadString();
-            }
-            else if (dataType == (byte)ServerMessageType.SetAngle)
-            {
-                for (int i = 0; i < 3; i++)
-                {
-                    if (reader.Offset + 2 > reader.Size) { Logger.LogWarning($"[SetAngle] buffer overflow at angle {i}"); return; }
-                    reader.Offset += 2;
-                }
-            }
-            else if (dataType == (byte)ServerMessageType.ClientData)
-            {
-                if (!HandleClientData(reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.SignOnNum)
-            {
-                HandleSignOnNum(reader);
-            }
-            else if (dataType == (byte)ServerMessageType.VoiceInit)
-            {
-                HandleVoiceInit(reader);
-            }
-            else if (dataType == (byte)ServerMessageType.Sound)
-            {
-                if (!HandleSound(reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.Customization)
-            {
-                if (!HandleCustomization(reader)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.Choke) { }
-            else if (dataType == (byte)ServerMessageType.Event)
-            {
-                if (!HandleEvent(reader, reliable: false)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.Version)
-            {
-                if (reader.Offset + 4 > reader.Size) { Logger.LogWarning("[Version] buffer overflow"); return; }
-                uint version = reader.ReadUInt32();
-                Logger.LogDebug($"[Version] protocol={version}");
-            }
-            else if (dataType == (byte)ServerMessageType.StopSound)
-            {
-                if (reader.Offset + 2 > reader.Size) { Logger.LogWarning("[StopSound] buffer overflow"); return; }
-                reader.Offset += 2;
-            }
-            else if (dataType == (byte)ServerMessageType.Pings)
-            {
-                HandlePings(reader);
-            }
-            else if (dataType == (byte)ServerMessageType.Particle)
-            {
-                Logger.LogDebug("[Particle] particle effect, skipping");
-                reader.Offset = reader.Size;
-            }
-            else if (dataType == (byte)ServerMessageType.Damage)
-            {
-                if (reader.Offset + 8 > reader.Size) { Logger.LogWarning("[Damage] buffer overflow"); return; }
-                reader.Offset += 8;
-                if (reader.Offset + 3 > reader.Size) { Logger.LogWarning("[Damage] buffer overflow at coords"); return; }
-                reader.Offset += 3;
-            }
-            else if (dataType == (byte)ServerMessageType.SpawnStatic)
-            {
-                Logger.LogDebug("[SpawnStatic] static entity, skipping");
-                reader.Offset = reader.Size;
-            }
-            else if (dataType == (byte)ServerMessageType.EventReliable)
-            {
-                if (!HandleEvent(reader, reliable: true)) return;
-            }
-            else if (dataType == (byte)ServerMessageType.SetPause)
-            {
-                uint paused = 0;
-                int bitIdx = reader.Offset * 8;
-                BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref paused, 1);
-                reader.Offset = (bitIdx + 7) / 8;
-                Logger.LogDebug($"[SetPause] paused={paused}");
-            }
-            else if (dataType == (byte)ServerMessageType.KilledMonster) { }
-            else if (dataType == (byte)ServerMessageType.FoundSecret) { }
-            else if (dataType == (byte)ServerMessageType.Intermission)
-            {
-                Logger.LogDebug("[Intermission] intermission started");
-            }
-            else if (dataType == (byte)ServerMessageType.Finale)
-            {
-                string finaleStr = reader.ReadString();
-                Logger.LogDebug($"[Finale] text=\"{finaleStr}\"");
-            }
-            else if (dataType == (byte)ServerMessageType.CdTrack)
-            {
-                if (reader.Offset + 2 > reader.Size) { Logger.LogWarning("[CdTrack] buffer overflow"); return; }
-                byte track = reader.ReadByte();
-                byte loopTrack = reader.ReadByte();
-                Logger.LogDebug($"[CdTrack] track={track}, loop={loopTrack}");
-            }
-            else if (dataType == (byte)ServerMessageType.Restore)
-            {
-                Logger.LogDebug("[Restore] restore game state, skipping");
-                reader.Offset = reader.Size;
-            }
-            else if (dataType == (byte)ServerMessageType.Cutscene)
-            {
-                string cutscene = reader.ReadString();
-                Logger.LogDebug($"[Cutscene] name=\"{cutscene}\"");
-            }
-            else if (dataType == (byte)ServerMessageType.WeaponAnim)
-            {
-                if (reader.Offset + 2 > reader.Size) { Logger.LogWarning("[WeaponAnim] buffer overflow"); return; }
-                byte anim = reader.ReadByte();
-                byte body = reader.ReadByte();
-                Logger.LogDebug($"[WeaponAnim] anim={anim}, body={body}");
-            }
-            else if (dataType == (byte)ServerMessageType.DecalName)
-            {
-                if (reader.Offset + 2 > reader.Size) { Logger.LogWarning("[DecalName] buffer overflow"); return; }
-                reader.Offset += 2;
-            }
-            else if (dataType == (byte)ServerMessageType.RoomType)
-            {
-                if (reader.Offset + 2 > reader.Size) { Logger.LogWarning("[RoomType] buffer overflow"); return; }
-                reader.Offset += 2;
-            }
-            else if (dataType == (byte)ServerMessageType.AddAngle)
-            {
-                if (reader.Offset + 2 > reader.Size) { Logger.LogWarning("[AddAngle] buffer overflow"); return; }
-                reader.Offset += 2;
-            }
-            else if (dataType == (byte)ServerMessageType.PacketEntities)
-            {
-                Logger.LogDebug("[PacketEntities] full entity packet, skipping");
-                reader.Offset = reader.Size;
-            }
-            else if (dataType == (byte)ServerMessageType.DeltaPacketEntities)
-            {
-                Logger.LogDebug("[DeltaPacketEntities] delta entity packet, skipping");
-                reader.Offset = reader.Size;
-            }
-            else if (dataType == (byte)ServerMessageType.CrosshairAngle)
-            {
-                if (reader.Offset + 2 > reader.Size) { Logger.LogWarning("[CrosshairAngle] buffer overflow"); return; }
-                reader.Offset += 2;
-            }
-            else if (dataType == (byte)ServerMessageType.SoundFade)
-            {
-                if (reader.Offset + 4 > reader.Size) { Logger.LogWarning("[SoundFade] buffer overflow"); return; }
-                reader.Offset += 4;
-            }
-            else if (dataType == (byte)ServerMessageType.FileTxferFailed)
-            {
-                string failName = reader.ReadString();
-                Logger.LogDebug($"[FileTxferFailed] file=\"{failName}\"");
-            }
-            else if (dataType == (byte)ServerMessageType.Hltv)
-            {
-                Logger.LogDebug("[Hltv] HLTV data, skipping");
-                reader.Offset = reader.Size;
-            }
-            else if (dataType == (byte)ServerMessageType.Director)
-            {
-                Logger.LogDebug("[Director] director command, skipping");
-                reader.Offset = reader.Size;
-            }
-            else if (dataType == (byte)ServerMessageType.VoiceData)
-            {
-                Logger.LogDebug("[VoiceData] voice data, skipping");
-                reader.Offset = reader.Size;
-            }
-            else if (dataType == (byte)ServerMessageType.SendExtraInfo)
-            {
-                // Payload: gamedir string + one byte (sv_cheats flag).
-                string extraDir = reader.ReadString();
-                byte extraFlag = reader.ReadByte();
-                Logger.LogDebug($"[SendExtraInfo] dir=\"{extraDir}\", svCheats={extraFlag}");
-            }
-            else if (dataType == (byte)ServerMessageType.TimeScale)
-            {
-                reader.ReadSingle(out float timeScale);
-                Logger.LogDebug($"[TimeScale] scale={timeScale:F2}");
-            }
-            else if (dataType == (byte)ServerMessageType.Exec)
-            {
-                // Payload: one exec-type byte; type 1 is followed by a class number byte (TFC).
-                byte execType = reader.ReadByte();
-                byte execClass = 0;
-                if (execType == 1)
-                    execClass = reader.ReadByte();
-                Logger.LogDebug($"[Exec] type={execType}, class={execClass}");
-            }
-            else
+            if (!_messageParsers.TryGetValue(dataType, out var parser))
             {
                 reader.Offset--;
                 Logger.LogWarning($"[Connected] Unknown data type: 0x{dataType:X2} at offset={reader.Offset}, remaining={reader.Remaining}");
                 return;
             }
+
+            if (!parser(ctx, reader))
+                return;
         }
 
         Logger.LogDebug($"[Connected] processed all {reader.Size} bytes successfully");
-        return;
     }
 
-    // --- Individual message handlers extracted for clarity ---
+    /// <summary>
+    /// Builds the server-message dispatch table. Each entry parses exactly one
+    /// message; a <c>false</c> return discards the remainder of the packet.
+    /// </summary>
+    private Dictionary<byte, MessageParser> BuildMessageParsers() => new()
+    {
+        [(byte)ServerMessageType.Nop] = (_, _) => true,
+        [(byte)ServerMessageType.Choke] = (_, _) => true,
+        [(byte)ServerMessageType.KilledMonster] = (_, _) => true,
+        [(byte)ServerMessageType.FoundSecret] = (_, _) => true,
+
+        [(byte)ServerMessageType.Bad] = (_, reader) =>
+        {
+            Logger.LogWarning("[Bad] server sent bad message, consuming remaining data");
+            reader.Offset = reader.Size;
+            return true;
+        },
+
+        [(byte)ServerMessageType.Disconnect] = (_, reader) =>
+        {
+            string reason = reader.ReadString();
+            Logger.LogWarning($"[Disconnect] server disconnected: reason=\"{reason}\"");
+            reader.Offset = reader.Size;
+            OnServerDisconnect?.Invoke(reason);
+            return true;
+        },
+
+        [(byte)ServerMessageType.Print] = (_, reader) =>
+        {
+            string msg = reader.ReadString();
+            Logger.LogDebug($"[Print] msg=\"{msg[..Math.Min(msg.Length, 200)]}\"");
+            OnConsolePrint?.Invoke(msg);
+            return true;
+        },
+
+        [(byte)ServerMessageType.CenterPrint] = (_, reader) =>
+        {
+            string centerMsg = reader.ReadString();
+            Logger.LogDebug($"[CenterPrint] msg=\"{centerMsg}\"");
+            OnCenterPrint?.Invoke(centerMsg);
+            return true;
+        },
+
+        [(byte)ServerMessageType.StuffText] = (_, reader) =>
+        {
+            string st = reader.ReadString();
+            Logger.LogDebug($"[StuffText] text=\"{st[..Math.Min(st.Length, 200)]}\"");
+            return true;
+        },
+
+        [(byte)ServerMessageType.ServerInfo] = (ctx, reader) => HandleServerInfo(ctx, reader),
+        [(byte)ServerMessageType.DeltaDescription] = (_, reader) => HandleDeltaDescription(reader),
+        [(byte)ServerMessageType.NewMoveVars] = (_, reader) => HandleNewMoveVars(reader),
+        [(byte)ServerMessageType.NewUserMsg] = (_, reader) => HandleNewUserMsg(reader),
+        [(byte)ServerMessageType.UpdateUserInfo] = (ctx, reader) => HandleUpdateUserInfo(ctx, reader),
+        [(byte)ServerMessageType.ResourceRequest] = (ctx, reader) => HandleResourceRequest(ctx, reader),
+        [(byte)ServerMessageType.SpawnBaseline] = (ctx, reader) => HandleSpawnBaseline(ctx, reader),
+        [(byte)ServerMessageType.ClientData] = (_, reader) => HandleClientData(reader),
+        [(byte)ServerMessageType.SignOnNum] = (_, reader) => HandleSignOnNum(reader),
+        [(byte)ServerMessageType.VoiceInit] = (_, reader) => HandleVoiceInit(reader),
+        [(byte)ServerMessageType.Sound] = (_, reader) => HandleSound(reader),
+        [(byte)ServerMessageType.Customization] = (_, reader) => HandleCustomization(reader),
+        [(byte)ServerMessageType.Event] = (_, reader) => HandleEvent(reader, reliable: false),
+        [(byte)ServerMessageType.EventReliable] = (_, reader) => HandleEvent(reader, reliable: true),
+        [(byte)ServerMessageType.Pings] = (_, reader) => HandlePings(reader),
+        [(byte)ServerMessageType.SendCvarValue] = (_, reader) => HandleSendCvarValue(reader),
+        [(byte)ServerMessageType.SendCvarValue2] = (_, reader) => HandleSendCvarValue2(reader),
+
+        [(byte)ServerMessageType.SetView] = (_, reader) => CheckedSkip(reader, "SetView", 2),
+        [(byte)ServerMessageType.StopSound] = (_, reader) => CheckedSkip(reader, "StopSound", 2),
+        [(byte)ServerMessageType.SetAngle] = (_, reader) => CheckedSkip(reader, "SetAngle", 2, 2, 2),
+        [(byte)ServerMessageType.AddAngle] = (_, reader) => CheckedSkip(reader, "AddAngle", 2),
+        [(byte)ServerMessageType.DecalName] = (_, reader) => CheckedSkip(reader, "DecalName", 2),
+        [(byte)ServerMessageType.RoomType] = (_, reader) => CheckedSkip(reader, "RoomType", 2),
+        [(byte)ServerMessageType.CrosshairAngle] = (_, reader) => CheckedSkip(reader, "CrosshairAngle", 2),
+        [(byte)ServerMessageType.SoundFade] = (_, reader) => CheckedSkip(reader, "SoundFade", 4),
+        [(byte)ServerMessageType.TempEntity] = (_, reader) => CheckedSkip(reader, "TempEntity", 1, 2, 2, 2),
+        [(byte)ServerMessageType.Damage] = (_, reader) => CheckedSkip(reader, "Damage", 8, 3),
+        [(byte)ServerMessageType.SpawnStaticSound] = (_, reader) => CheckedSkip(reader, "SpawnStaticSound", 14),
+
+        [(byte)ServerMessageType.Version] = (_, reader) =>
+        {
+            if (!CheckedSkip(reader, "Version", 4)) return false;
+            uint version = BitConverter.ToUInt32(reader.Data, reader.Offset - 4);
+            Logger.LogDebug($"[Version] protocol={version}");
+            return true;
+        },
+
+        [(byte)ServerMessageType.Time] = (_, reader) =>
+        {
+            reader.ReadSingle(out float time);
+            Logger.LogDebug($"[Time] time={time:F2}");
+            return true;
+        },
+
+        [(byte)ServerMessageType.TimeScale] = (_, reader) =>
+        {
+            reader.ReadSingle(out float timeScale);
+            Logger.LogDebug($"[TimeScale] scale={timeScale:F2}");
+            return true;
+        },
+
+        [(byte)ServerMessageType.LightStyle] = (_, reader) =>
+        {
+            if (!CheckedSkip(reader, "LightStyle", 1)) return false;
+            reader.ReadString();
+            return true;
+        },
+
+        [(byte)ServerMessageType.ResourceLocation] = (_, reader) =>
+        {
+            string loc = reader.ReadString();
+            Logger.LogDebug($"[ResourceLocation] location=\"{loc}\"");
+            return true;
+        },
+
+        [(byte)ServerMessageType.ResourceList] = (ctx, reader) =>
+        {
+            int listStart = reader.Offset;
+            ProcessResourceList(ctx, reader);
+            ctx.ResourceListRawBytes = reader.Data[listStart..reader.Offset];
+            Logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={reader.Offset - listStart}");
+            OnResourceList?.Invoke(this, ctx.Resources);
+
+            // Resource parsing completes the client's loading phase — request
+            // the spawn now (the engine sends it at the end of resource processing).
+            TrySendSpawn(ctx);
+            return true;
+        },
+
+        [(byte)ServerMessageType.Particle] = (_, reader) =>
+        {
+            Logger.LogDebug("[Particle] particle effect, skipping");
+            reader.Offset = reader.Size;
+            return true;
+        },
+
+        [(byte)ServerMessageType.SpawnStatic] = (_, reader) =>
+        {
+            Logger.LogDebug("[SpawnStatic] static entity, skipping");
+            reader.Offset = reader.Size;
+            return true;
+        },
+
+        [(byte)ServerMessageType.Restore] = (_, reader) =>
+        {
+            Logger.LogDebug("[Restore] restore game state, skipping");
+            reader.Offset = reader.Size;
+            return true;
+        },
+
+        [(byte)ServerMessageType.PacketEntities] = (_, reader) =>
+        {
+            Logger.LogDebug("[PacketEntities] full entity packet, skipping");
+            reader.Offset = reader.Size;
+            return true;
+        },
+
+        [(byte)ServerMessageType.DeltaPacketEntities] = (_, reader) =>
+        {
+            Logger.LogDebug("[DeltaPacketEntities] delta entity packet, skipping");
+            reader.Offset = reader.Size;
+            return true;
+        },
+
+        [(byte)ServerMessageType.Hltv] = (_, reader) =>
+        {
+            Logger.LogDebug("[Hltv] HLTV data, skipping");
+            reader.Offset = reader.Size;
+            return true;
+        },
+
+        [(byte)ServerMessageType.Director] = (_, reader) =>
+        {
+            Logger.LogDebug("[Director] director command, skipping");
+            reader.Offset = reader.Size;
+            return true;
+        },
+
+        [(byte)ServerMessageType.VoiceData] = (_, reader) =>
+        {
+            Logger.LogDebug("[VoiceData] voice data, skipping");
+            reader.Offset = reader.Size;
+            return true;
+        },
+
+        [(byte)ServerMessageType.Intermission] = (_, _) =>
+        {
+            Logger.LogDebug("[Intermission] intermission started");
+            return true;
+        },
+
+        [(byte)ServerMessageType.Finale] = (_, reader) =>
+        {
+            string finaleStr = reader.ReadString();
+            Logger.LogDebug($"[Finale] text=\"{finaleStr}\"");
+            return true;
+        },
+
+        [(byte)ServerMessageType.Cutscene] = (_, reader) =>
+        {
+            string cutscene = reader.ReadString();
+            Logger.LogDebug($"[Cutscene] name=\"{cutscene}\"");
+            return true;
+        },
+
+        [(byte)ServerMessageType.FileTxferFailed] = (_, reader) =>
+        {
+            string failName = reader.ReadString();
+            Logger.LogDebug($"[FileTxferFailed] file=\"{failName}\"");
+            return true;
+        },
+
+        [(byte)ServerMessageType.SendExtraInfo] = (_, reader) =>
+        {
+            // Payload: gamedir string + one byte (sv_cheats flag).
+            string extraDir = reader.ReadString();
+            byte extraFlag = reader.ReadByte();
+            Logger.LogDebug($"[SendExtraInfo] dir=\"{extraDir}\", svCheats={extraFlag}");
+            return true;
+        },
+
+        [(byte)ServerMessageType.Exec] = (_, reader) =>
+        {
+            // Payload: one exec-type byte; type 1 is followed by a class number byte (TFC).
+            byte execType = reader.ReadByte();
+            byte execClass = 0;
+            if (execType == 1)
+                execClass = reader.ReadByte();
+            Logger.LogDebug($"[Exec] type={execType}, class={execClass}");
+            return true;
+        },
+
+        [(byte)ServerMessageType.CdTrack] = (_, reader) =>
+        {
+            if (!CheckedSkip(reader, "CdTrack", 2)) return false;
+            byte track = reader.Data[reader.Offset - 2];
+            byte loopTrack = reader.Data[reader.Offset - 1];
+            Logger.LogDebug($"[CdTrack] track={track}, loop={loopTrack}");
+            return true;
+        },
+
+        [(byte)ServerMessageType.WeaponAnim] = (_, reader) =>
+        {
+            if (!CheckedSkip(reader, "WeaponAnim", 2)) return false;
+            byte anim = reader.Data[reader.Offset - 2];
+            byte body = reader.Data[reader.Offset - 1];
+            Logger.LogDebug($"[WeaponAnim] anim={anim}, body={body}");
+            return true;
+        },
+
+        [(byte)ServerMessageType.SetPause] = (_, reader) =>
+        {
+            int bitIdx = reader.Offset * 8;
+            uint paused = 0;
+            BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref paused, 1);
+            reader.Offset = (bitIdx + 7) / 8;
+            Logger.LogDebug($"[SetPause] paused={paused}");
+            return true;
+        },
+    };
+
+    /// <summary>Skips fixed-size payloads, aborting the packet when data is missing.</summary>
+    private bool CheckedSkip(MessageReader reader, string name, params ReadOnlySpan<int> sizes)
+    {
+        for (int i = 0; i < sizes.Length; i++)
+        {
+            if (reader.Offset + sizes[i] > reader.Size)
+            {
+                Logger.LogWarning(sizes.Length == 1
+                    ? $"[{name}] buffer overflow"
+                    : $"[{name}] buffer overflow (part {i})");
+                return false;
+            }
+            reader.Offset += sizes[i];
+        }
+        return true;
+    }
+
+    // --- Individual message handlers ---
 
     private bool HandleServerInfo(ConnectionContext ctx, MessageReader reader)
     {
@@ -427,10 +409,10 @@ public partial class GoldsrcConnection
             {
                 uint hasArgs = 0;
                 if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasArgs, 1)) return false;
-                if (hasArgs != 0 && !ParseDeltaFields(DeltaDefinitions.Event, reader.Data, reader.Size, ref bitIdx))
+                if (hasArgs != 0 && !DeltaReader.ReadFields(DeltaDefinitions.Event, reader.Data, reader.Size, ref bitIdx))
                     return false;
             }
-            else if (!ParseDeltaFields(DeltaDefinitions.Event, reader.Data, reader.Size, ref bitIdx))
+            else if (!DeltaReader.ReadFields(DeltaDefinitions.Event, reader.Data, reader.Size, ref bitIdx))
             {
                 return false;
             }
@@ -470,7 +452,7 @@ public partial class GoldsrcConnection
         for (uint f = 0; f < fieldCount; f++)
         {
             int fieldStartBit = bitIdx;
-            if (!ParseDeltaFields(DeltaDefinitions.MetaDeltaDescription, reader.Data, reader.Size, ref bitIdx))
+            if (!DeltaReader.ReadFieldDescription(reader.Data, reader.Size, ref bitIdx))
             {
                 Logger.LogWarning($"[DeltaDescription] failed parsing field {f}");
                 return false;
@@ -553,11 +535,12 @@ public partial class GoldsrcConnection
         uint startIndex = reader.ReadUInt32();
         Logger.LogDebug($"[ResourceRequest] spawnCount={ctx.SpawnCount}, startIndex={startIndex}");
 
-        // Reply with our custom resource list. This client holds no custom
-        // content, so the list is an empty count (16-bit) — byte-aligned,
-        // unlike the server's bit-packed svc_resourcelist.
-        Logger.LogDebug("[ResourceRequest] replying with empty clc_resourcelist");
-        _ = SendCommandAsync(ClientCommandType.ResourceList, [0x00, 0x00], CancellationToken.None);
+        // Reply by echoing the server's svc_resourcelist payload back. This client
+        // holds no custom content, so with no list received yet the reply is an
+        // empty count (16-bit) — byte-aligned, unlike the server's bit-packed list.
+        byte[] reply = ctx.ResourceListRawBytes.Length > 0 ? (byte[])ctx.ResourceListRawBytes.Clone() : [0x00, 0x00];
+        Logger.LogDebug($"[ResourceRequest] replying with clc_resourcelist ({reply.Length} bytes)");
+        _ = SendCommandAsync(ClientCommandType.ResourceList, reply, CancellationToken.None);
         return true;
     }
 
@@ -567,11 +550,7 @@ public partial class GoldsrcConnection
         uint requestId = reader.ReadUInt32();
         string cvarName = reader.ReadString();
         Logger.LogDebug($"[SendCvarValue2] requestId={requestId}, cvar=\"{cvarName}\"");
-        var reply = new List<byte>();
-        MessageWriter.WriteUInt32(reply, requestId);
-        MessageWriter.WriteString(reply, cvarName);
-        MessageWriter.WriteString(reply, Settings.GetDefaultCvarValue(cvarName));
-        _ = SendCommandAsync(ClientCommandType.CvarValue2, reply.ToArray(), CancellationToken.None);
+        _ = SendCvarValue2Async((int)requestId, cvarName, Settings.GetDefaultCvarValue(cvarName));
         return true;
     }
 
@@ -579,9 +558,7 @@ public partial class GoldsrcConnection
     {
         string cvarName = reader.ReadString();
         Logger.LogDebug($"[SendCvarValue] cvar=\"{cvarName}\"");
-        var reply = new List<byte>();
-        MessageWriter.WriteString(reply, Settings.GetDefaultCvarValue(cvarName));
-        _ = SendCommandAsync(ClientCommandType.CvarValue, reply.ToArray(), CancellationToken.None);
+        _ = SendCvarValueAsync(cvarName, Settings.GetDefaultCvarValue(cvarName));
         return true;
     }
 
@@ -623,7 +600,7 @@ public partial class GoldsrcConnection
                 dt = DeltaDefinitions.CustomEntityState;
             }
 
-            ParseDeltaFields(dt, reader.Data, reader.Size, ref bitIdx);
+            DeltaReader.ReadFields(dt, reader.Data, reader.Size, ref bitIdx);
             entityCount++;
         }
 
@@ -631,7 +608,7 @@ public partial class GoldsrcConnection
         BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref baselineCount, 6);
         Logger.LogDebug($"[SpawnBaseline] entities={entityCount}, baselineCount={baselineCount}");
         for (uint ei = 0; ei < baselineCount; ei++)
-            ParseDeltaFields(DeltaDefinitions.EntityState, reader.Data, reader.Size, ref bitIdx);
+            DeltaReader.ReadFields(DeltaDefinitions.EntityState, reader.Data, reader.Size, ref bitIdx);
 
         reader.Offset = (bitIdx + 7) / 8;
         Logger.LogDebug($"[SpawnBaseline] done, totalBits={bitIdx}, newOffset={reader.Offset}");
@@ -677,7 +654,7 @@ public partial class GoldsrcConnection
             if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref deltaSeq, 8)) return false;
             Logger.LogDebug($"[ClientData] deltaSeq={deltaSeq}");
         }
-        ParseDeltaFields(DeltaDefinitions.ClientData, reader.Data, reader.Size, ref bitIdx);
+        DeltaReader.ReadFields(DeltaDefinitions.ClientData, reader.Data, reader.Size, ref bitIdx);
 
         int weaponCount = 0;
         while (true)
@@ -687,7 +664,7 @@ public partial class GoldsrcConnection
             if (haveDelta == 0) break;
             uint index = 0;
             if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref index, 6)) return false;
-            ParseDeltaFields(DeltaDefinitions.WeaponData, reader.Data, reader.Size, ref bitIdx);
+            DeltaReader.ReadFields(DeltaDefinitions.WeaponData, reader.Data, reader.Size, ref bitIdx);
             weaponCount++;
         }
         Logger.LogDebug($"[ClientData] done, weaponDeltas={weaponCount}");
@@ -695,9 +672,9 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private void HandleSignOnNum(MessageReader reader)
+    private bool HandleSignOnNum(MessageReader reader)
     {
-        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[SignOnNum] buffer overflow"); return; }
+        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[SignOnNum] buffer overflow"); return true; }
         byte signOn = reader.Data[reader.Offset++];
         Logger.LogDebug($"[SignOnNum] value={signOn}");
         if (signOn == 1)
@@ -710,14 +687,16 @@ public partial class GoldsrcConnection
         {
             Logger.LogDebug($"[SignOn] signon={signOn} received (not 1, no action)");
         }
+        return true;
     }
 
-    private void HandleVoiceInit(MessageReader reader)
+    private bool HandleVoiceInit(MessageReader reader)
     {
         string codec = reader.ReadString();
-        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[VoiceInit] buffer overflow"); return; }
+        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[VoiceInit] buffer overflow"); return true; }
         byte quality = reader.Data[reader.Offset++];
         Logger.LogDebug($"[VoiceInit] codec=\"{codec}\", quality={quality}");
+        return true;
     }
 
     private bool HandleSound(MessageReader reader)
@@ -781,7 +760,7 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private void HandlePings(MessageReader reader)
+    private bool HandlePings(MessageReader reader)
     {
         int bitIdx = reader.Offset * 8;
         for (int i = 0; i < 32; i++)
@@ -791,12 +770,13 @@ public partial class GoldsrcConnection
                 break;
             if (hasEntry == 0) break;
             uint slot = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref slot, 5)) return;
+            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref slot, 5)) return true;
             uint ping = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref ping, 12)) return;
+            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref ping, 12)) return true;
             uint loss = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref loss, 7)) return;
+            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref loss, 7)) return true;
         }
         reader.Offset = (bitIdx + 7) / 8;
+        return true;
     }
 }

@@ -2,6 +2,8 @@ using CliFx;
 using CliFx.Binding;
 using CliFx.Infrastructure;
 using GoldsrcNetClient.Core.Game;
+using GoldsrcNetClient.Core.Handshake;
+using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.SteamProvider;
@@ -177,7 +179,7 @@ public partial class ConnectCommand : ICommand
         CancellationTokenSource exitCts)
     {
         var userCts = new CancellationTokenSource();
-        var cliHandler = new CliServerMessageHandler(console, Debug, userCts);
+        var cliHandler = new CliServerMessageHandler(console, Debug);
         if (gameHandler is GameMessageHandler chain)
             chain.Next = cliHandler;
 
@@ -217,6 +219,7 @@ public partial class ConnectCommand : ICommand
             }
         };
         connection.OnConsolePrint += msg => console.Output.WriteLine($"[Server] {msg.TrimEnd('\n')}");
+        connection.OnCenterPrint += msg => console.Output.WriteLine($"[CenterPrint] {msg}");
         connection.OnServerDisconnect += reason =>
         {
             console.Output.WriteLine($"[Disconnect] {reason}");
