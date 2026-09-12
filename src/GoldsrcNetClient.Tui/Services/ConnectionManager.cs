@@ -74,7 +74,9 @@ public sealed class ConnectionManager : IDisposable
         var logger = new GlobalLogger<GoldsrcConnection>();
         var resolvedProvider = _authProvider ?? new NoSteamAuthProvider();
         Emit($"Auth: {resolvedProvider.GetType().Name} (IsAvailable={resolvedProvider.IsAvailable})");
-        _connection = new GoldsrcConnection(logger, resolvedProvider, _gameHandler);
+        bool useNetchanEncryption = GameLoginProviders.GetByAppId(config.AppId)?.UseNetchanEncryption ?? true;
+        bool longFragmentFields = GameLoginProviders.GetByAppId(config.AppId)?.UseLongFragmentFields ?? false;
+        _connection = new GoldsrcConnection(logger, resolvedProvider, _gameHandler, useNetchanEncryption: useNetchanEncryption, longFragmentFields: longFragmentFields);
         _connection.UserInfo = userInfo;
 
         // Console output, center prints, and server-initiated disconnects are handled

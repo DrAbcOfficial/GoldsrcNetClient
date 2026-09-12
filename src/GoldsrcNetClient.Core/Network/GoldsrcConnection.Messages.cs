@@ -19,6 +19,8 @@ public partial class GoldsrcConnection
 
         var reader = new MessageReader(data, data.Length);
         Logger.LogDebug($"[Connected] processing {data.Length} bytes");
+        if (data.Length > 16)
+            Logger.LogDebug($"[Connected] head: {Convert.ToHexString(data.AsSpan(0, Math.Min(data.Length, 48)).ToArray())}");
 
         while (reader.Remaining > 0)
         {
@@ -48,12 +50,21 @@ public partial class GoldsrcConnection
     /// Builds the server-message dispatch table. Each entry parses exactly one
     /// message; a <c>false</c> return discards the remainder of the packet.
     /// </summary>
-    private Dictionary<byte, MessageParser> BuildMessageParsers() => new()
+    private Dictionary<byte, MessageParser> BuildMessageParsers()
     {
+        // The Sven Co-op engine branch repurposes the legacy svc_foundsecret slot as a
+        // string-carrying message (SV_New_f writes it before the serverinfo banner);
+        // on Valve branches the slot is unused and carries no payload.
+        var foundSecret = _useLongFragmentFields
+            ? (MessageParser)((_, reader) => { reader.ReadString(); return true; })
+            : (_, _) => true;
+
+        return new()
+        {
         [(byte)ServerMessageType.Nop] = (_, _) => true,
         [(byte)ServerMessageType.Choke] = (_, _) => true,
         [(byte)ServerMessageType.KilledMonster] = (_, _) => true,
-        [(byte)ServerMessageType.FoundSecret] = (_, _) => true,
+        [(byte)ServerMessageType.FoundSecret] = foundSecret,
 
         [(byte)ServerMessageType.Bad] = (_, reader) =>
         {
@@ -304,7 +315,8 @@ public partial class GoldsrcConnection
             Logger.LogDebug($"[SetPause] paused={paused}");
             return true;
         },
-    };
+        };
+    }
 
     /// <summary>Skips fixed-size payloads, aborting the packet when data is missing.</summary>
     private bool CheckedSkip(MessageReader reader, string name, params ReadOnlySpan<int> sizes)
@@ -625,6 +637,11 @@ public partial class GoldsrcConnection
     /// and SV_CheckMapDifferences drops the connection (as a fake overflow) if the
     /// recovered value does not match the real worldmap CRC. Fires once per connection.
     /// </summary>
+    /// <remarks>
+    /// The Sven Co-op engine branch sends the worldmap CRC as-is (wire-verified against
+    /// a real 5.26 client: <c>spawn 1 1038585952</c> equals the raw map CRC), so the
+    /// Munge2 pass is skipped when the Sven branch flags are active.
+    /// </remarks>
     private void TrySendSpawn(ConnectionContext ctx)
     {
         if (_sentSpawn || !_sentContinueLoading)
@@ -636,11 +653,25 @@ public partial class GoldsrcConnection
         byte[] crcBytes = BitConverter.GetBytes(rawCrc);
         int mungeKey = (-1 - (int)spawnCount) & 0xFF;
         Logger.LogDebug($"[SignOn] spawn: rawCrc=0x{rawCrc:X8}, mungeKey=0x{mungeKey:X2} (spawnCount={spawnCount})");
-        MungeEngine.Munge2(crcBytes, 4, mungeKey);
+        if (!_useLongFragmentFields)
+            MungeEngine.Munge2(crcBytes, 4, mungeKey);
         int mungedCrc = BitConverter.ToInt32(crcBytes, 0);
         var spawnCmd = $"spawn {spawnCount} {mungedCrc}";
         Logger.LogDebug($"[SignOn] sending spawn (spawnCount={spawnCount}, mungedCrc=0x{mungedCrc:X8})");
         _ = SendStringCmdAsync(ClientCommandType.StringCmd, spawnCmd, CancellationToken.None);
+
+        if (_useLongFragmentFields)
+        {
+            // Sven's signon does not end with a parseable svc_signonnum for us (its
+            // delta descriptions diverge from the Valve layout, so the flood tail is
+            // not decodable); the real client sends sendents right after spawn.
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1));
+                Logger.LogDebug("[SignOn] sending sendents (Sven flow)");
+                await SendStringCmdAsync(ClientCommandType.StringCmd, "sendents", CancellationToken.None);
+            });
+        }
     }
 
     private bool HandleClientData(MessageReader reader)

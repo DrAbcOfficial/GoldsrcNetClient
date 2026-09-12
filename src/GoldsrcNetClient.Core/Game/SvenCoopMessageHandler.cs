@@ -8,6 +8,22 @@ namespace GoldsrcNetClient.Core.Game;
 /// Extends <see cref="HalfLifeMessageHandler"/> with Sven Co-op specific user messages.
 /// </summary>
 /// <remarks>
+/// <para>Message indices are learned at runtime from <c>svc_newusermsg</c> and dispatched
+/// by name, so no compiled-in index table is needed. The complete set of user message
+/// names registered by the Sven Co-op 5.26 game DLL (<c>server.so</c>, 83 messages,
+/// extracted from its <c>gmsg*</c> symbols): ASScriptName, AmmoPickup, AmmoX, Battery,
+/// CameraMouse, CbElec, CdAudio, ChangeSky, ClassicMode, Concuss, CurWeapon, CustomSprite,
+/// CustomWeaponDir, Damage, DeathMsg, EndVote, Fade, Flamethrower, FlashBattery, Flashlight,
+/// Fog, GameMode, GargSplash, GeigerRange, Gib, Health, HideHUD, HudText, InitHUD, InvAdd,
+/// InvRemove, ItemPickup, KeyBindingString, MOTD, MapList, NextMap, NumDisplay, Playlist,
+/// PortalUpdate, RampSprite, ResetHUD, SRDetonate, SRPrimed, SRPrimedOff, SayText, ScoreInfo,
+/// SelAmmo, Sentence, ServerBuild, ServerName, ServerVer, Server_SoundList, SetCurWeap, SetFOV,
+/// Shake, ShieldRic, ShkFlash, ShowGameTitle, ShowMenu, SpawnBlood, Spectator, SporeTrail,
+/// StartSound, TeamInfo, TeamNames, TeamScore, TextMsg, TimeDisplay, TimeEnd, ToggleElem,
+/// ToxicCloud, TracerDecal, Train, UpdateNum, UpdateTime, VGUIMenu, VModelPos, ViewMode,
+/// VoteMenu, WeapPickup, WeaponList, WeaponSprites, WeatherFX. Unstructured ones are raised
+/// as raw events via <see cref="OnScSpecificMessage"/>.</para>
+///
 /// <para>Sven Co-op uses most Half-Life Deathmatch user messages plus its own
 /// co-op specific messages: Camera, CameraMouse, CbElec, CreateBlood, Fog,
 /// GargSplash, Gib, SporeTrail, ToxicCloud.</para>

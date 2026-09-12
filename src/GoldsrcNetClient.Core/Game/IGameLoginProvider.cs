@@ -44,6 +44,26 @@ public interface IGameLoginProvider
     string DefaultUserInfo { get; }
 
     /// <summary>
+    /// Whether netchan packets are Munge2-encrypted with this game's engine branch.
+    /// Standard Valve GoldSrc engine branches (Half-Life, Counter-Strike) call
+    /// COM_Munge2/COM_UnMunge2 unconditionally in the netchan; the Sven Co-op engine
+    /// branch ships the munge code but with zero call sites (verified in hw.dll via
+    /// Ghidra — tables and functions present as dead code), so its netchan traffic is
+    /// plaintext in both directions. Encrypting towards a Sven server yields
+    /// <c>Bad command character in client command</c> kicks; not decrypting a
+    /// Valve-server stream yields garbage payloads.
+    /// </summary>
+    bool UseNetchanEncryption { get; }
+
+    /// <summary>
+    /// Whether netchan fragment headers carry 32-bit startpos/length fields. The Sven
+    /// Co-op engine branch widened these from Valve's 16-bit fields (wire-verified:
+    /// a 1-of-1 fragment announcing its 43-byte BZ2-wrapped serverinfo is parsed as a
+    /// zero-length fragment under the Valve layout). Valve GoldSrc servers use 16 bit.
+    /// </summary>
+    bool UseLongFragmentFields { get; }
+
+    /// <summary>
     /// Creates the server message handler for this game. Called once per connection;
     /// a new instance (or a freshly reset one) should be returned per connection.
     /// </summary>
@@ -65,6 +85,12 @@ public abstract class BaseGameLoginProvider : IGameLoginProvider
     /// <inheritdoc />
     public virtual string DefaultUserInfo =>
         "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000\\hltv\\0";
+
+    /// <inheritdoc />
+    public virtual bool UseNetchanEncryption => true;
+
+    /// <inheritdoc />
+    public virtual bool UseLongFragmentFields => false;
 
     /// <inheritdoc />
     public abstract IServerMessageHandler CreateMessageHandler();
@@ -169,6 +195,17 @@ public sealed class SvenCoopLoginProvider : BaseGameLoginProvider
     /// <inheritdoc />
     public override string DefaultUserInfo =>
         "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000";
+
+    /// <summary>
+    /// The Sven Co-op engine branch does not call COM_Munge2/COM_UnMunge2 anywhere
+    /// (confirmed in the 5.26 dedicated-server hw.dll: the munge functions and tables
+    /// are compiled in as dead code with zero references), so its netchan is plaintext.
+    /// </summary>
+    /// <inheritdoc />
+    public override bool UseNetchanEncryption => false;
+
+    /// <inheritdoc />
+    public override bool UseLongFragmentFields => true;
 
     /// <inheritdoc />
     public override IServerMessageHandler CreateMessageHandler() => new SvenCoopMessageHandler();

@@ -10,12 +10,13 @@ namespace GoldsrcNetClient.Test;
 public class NetchanChannelTests
 {
     /// <summary>Creates a channel whose packets are captured in a list (no real socket).</summary>
-    private static (NetchanChannel Channel, List<byte[]> Sent) CreateChannel()
+    private static (NetchanChannel Channel, List<byte[]> Sent) CreateChannel(bool useEncryption = true, bool longFragmentFields = false)
     {
         List<byte[]> sent = [];
         var channel = new NetchanChannel(
             new IPEndPoint(IPAddress.Loopback, 27015),
-            (packet, _, _) => { sent.Add((byte[])packet.ToArray().Clone()); return Task.FromResult(0); });
+            (packet, _, _) => { sent.Add((byte[])packet.ToArray().Clone()); return Task.FromResult(0); },
+            useEncryption: useEncryption, longFragmentFields: longFragmentFields);
         return (channel, sent);
     }
 
@@ -174,5 +175,100 @@ public class NetchanChannelTests
         uint w2 = BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(4));
         Assert.Equal(5u, w2 & MessageConstants.SequenceMask);
         Assert.Equal(1u, w2 >> 31);
+    }
+
+    /// <summary>Builds a sequenced packet with a raw PLAINTEXT body (no Munge2), as sent
+    /// by plaintext-netchan engine branches (Sven Co-op).</summary>
+    private static byte[] MakePlainInlinePacket(uint seq, uint ack, byte[] body, bool reliable = false)
+    {
+        uint w1 = seq & MessageConstants.SequenceMask;
+        if (reliable)
+            w1 |= MessageConstants.SequenceFlagReliable;
+        uint w2 = (ack & MessageConstants.SequenceMask) | (ack << 31);
+        byte[] packet = new byte[MessageConstants.ConnectedHeadSize + body.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(0), w1);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(4), w2);
+        body.CopyTo(packet, MessageConstants.ConnectedHeadSize);
+        return packet;
+    }
+
+    /// <summary>Builds a fragment-stream packet with 32-bit startpos/length fields, the
+    /// layout the Sven Co-op engine emits.</summary>
+    private static byte[] MakeSvenFragmentPacket(uint seq, uint ack, uint fragId, int startpos, byte[] chunk)
+    {
+        uint w1 = (seq & MessageConstants.SequenceMask)
+                  | MessageConstants.SequenceFlagReliable
+                  | MessageConstants.SequenceFlagFragment;
+        uint w2 = (ack & MessageConstants.SequenceMask) | (ack << 31);
+        var body = new List<byte>
+        {
+            0x01 // stream 0 active
+        };
+        body.AddRange(BitConverter.GetBytes(fragId));
+        body.AddRange(BitConverter.GetBytes(startpos));
+        body.AddRange(BitConverter.GetBytes(chunk.Length));
+        body.Add(0x00); // stream 1 inactive
+        body.AddRange(chunk);
+
+        byte[] packet = new byte[MessageConstants.ConnectedHeadSize + body.Count];
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(0), w1);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(4), w2);
+        ((byte[])[.. body]).CopyTo(packet, MessageConstants.ConnectedHeadSize);
+        return packet;
+    }
+
+    [Fact]
+    public void SvenFragmentHeader_With32BitFields_IsReassembled()
+    {
+        // Wire-verified against a real Sven Co-op 5.26 (build 10257) server: the first
+        // signon fragment announces startpos=0, length=43 as 32-bit fields. Under the
+        // Valve 16-bit layout the same bytes parse as length=0 and the signon stalls.
+        var (channel, _) = CreateChannel(useEncryption: false, longFragmentFields: true);
+        List<byte[]> received = [];
+
+        byte[] chunk = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        channel.ProcessIncoming(MakeSvenFragmentPacket(seq: 1, ack: 2, fragId: (1u << 16) | 1, startpos: 0, chunk), received.Add);
+
+        Assert.Equal([chunk], received);
+    }
+
+    [Fact]
+    public void SvenFragmentHeader_ValveParsing_RejectsAndIgnores()
+    {
+        // The same wire bytes must NOT reassemble under the Valve layout (the parse
+        // fails validation and the packet is dropped), matching the pre-fix behavior.
+        var (channel, _) = CreateChannel(useEncryption: false, longFragmentFields: false);
+        List<byte[]> received = [];
+
+        byte[] chunk = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        channel.ProcessIncoming(MakeSvenFragmentPacket(seq: 1, ack: 2, fragId: (1u << 16) | 1, startpos: 0, chunk), received.Add);
+
+        Assert.Empty(received);
+    }
+
+    [Fact]
+    public void EncryptionDisabled_RoundTripsPayloadsUnchanged()
+    {
+        // Sven Co-op netchan: both ends send plaintext; the channel must neither
+        // decrypt received payloads nor encrypt outgoing ones.
+        var (sender, senderSent) = CreateChannel(useEncryption: false);
+        var (receiver, receiverSent) = CreateChannel(useEncryption: false);
+        List<byte[]> received = [];
+
+        sender.SendReliable([(byte)'n', (byte)'e', (byte)'w', 0]);
+        var packet = Assert.Single(senderSent);
+        byte[] body = packet[MessageConstants.ConnectedHeadSize..];
+        Assert.Equal([(byte)'n', (byte)'e', (byte)'w', (byte)0], body[..4]);
+
+        receiver.ProcessIncoming(packet, received.Add);
+        var message = Assert.Single(received);
+        Assert.Equal([(byte)'n', (byte)'e', (byte)'w', (byte)0], message[..4]);
+        Assert.Equal((byte)ServerMessageType.Nop, message[4]);
+
+        // An incoming plaintext packet from the server is dispatched verbatim too —
+        // an UnMunge2 pass would scramble the first bytes.
+        receiver.ProcessIncoming(MakePlainInlinePacket(seq: 2, ack: 1, body: [0x02, (byte)'h', (byte)'i', 0], reliable: true), received.Add);
+        Assert.Equal(2, received.Count);
+        Assert.Equal([0x02, (byte)'h', (byte)'i', 0], received[1][..4]);
     }
 }

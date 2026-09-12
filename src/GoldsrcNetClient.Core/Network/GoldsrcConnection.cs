@@ -52,6 +52,8 @@ public partial class GoldsrcConnection : IDisposable
     private readonly IServerMessageHandler _messageHandler;
     private readonly HandshakeNegotiator _handshake;
     private readonly Dictionary<byte, MessageParser> _messageParsers;
+    private readonly bool _useNetchanEncryption;
+    private readonly bool _useLongFragmentFields;
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private CancellationTokenSource? _keepAliveCts;
 
@@ -188,12 +190,24 @@ public partial class GoldsrcConnection : IDisposable
     /// before built-in processing. Return <c>true</c> to consume the message; <c>false</c> to fall through to the default parser.
     /// Defaults to <see cref="DefaultServerMessageHandler"/> which always delegates to built-in logic.</param>
     /// <param name="localPort">Local UDP port to bind (0 = OS-assigned).</param>
-    public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null, IServerMessageHandler? messageHandler = null, int localPort = 0)
+    /// <param name="useNetchanEncryption">Whether netchan payloads are Munge2-encrypted.
+    /// Match this to the engine branch of the target server: true for Valve GoldSrc games
+    /// (Half-Life, Counter-Strike), false for Sven Co-op whose netchan is plaintext
+    /// (see <see cref="Game.IGameLoginProvider.UseNetchanEncryption"/>).</param>
+    /// <param name="longFragmentFields">Parse incoming fragment headers with 32-bit
+    /// startpos/length fields (Sven Co-op); false for Valve's 16-bit fields.</param>
+    public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null, IServerMessageHandler? messageHandler = null, int localPort = 0, bool useNetchanEncryption = true, bool longFragmentFields = false)
     {
         Logger = logger ?? NullLogger<GoldsrcConnection>.Instance;
         _authProvider = authProvider ?? new NoSteamAuthProvider();
         _messageHandler = messageHandler ?? new DefaultServerMessageHandler();
+        _useNetchanEncryption = useNetchanEncryption;
+        _useLongFragmentFields = longFragmentFields;
         _socket = new UdpClient(localPort);
+        // The signon burst is ~260 KB of back-to-back fragments; a small OS receive
+        // buffer drops most of it before the single-threaded receive loop can drain,
+        // which stalls the whole reliable stream.
+        _socket.Client.ReceiveBufferSize = 256 * 1024;
         _handshake = new HandshakeNegotiator(_authProvider, Settings,
             (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask(), Logger);
         _messageParsers = BuildMessageParsers();
@@ -272,7 +286,8 @@ public partial class GoldsrcConnection : IDisposable
         var session = new Session(ep)
         {
             Channel = new NetchanChannel(ep,
-                (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask(), Logger)
+                (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask(), Logger,
+                _useNetchanEncryption, _useLongFragmentFields)
         };
         _sessions[ep] = session;
 

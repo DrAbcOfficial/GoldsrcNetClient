@@ -148,7 +148,7 @@ public partial class ConnectCommand : ICommand
 
         while (!exitCts.IsCancellationRequested)
         {
-            await RunSessionAsync(console, logger, gameHandler, authProvider, loginAppId, exitCts);
+            await RunSessionAsync(console, logger, gameHandler, authProvider, loginAppId, profile.UseNetchanEncryption, profile.UseLongFragmentFields, exitCts);
 
             if (ReconnectDelaySeconds <= 0 || exitCts.IsCancellationRequested)
                 break;
@@ -176,6 +176,8 @@ public partial class ConnectCommand : ICommand
         IServerMessageHandler gameHandler,
         ISteamAuthProvider? authProvider,
         uint loginAppId,
+        bool useNetchanEncryption,
+        bool longFragmentFields,
         CancellationTokenSource exitCts)
     {
         var userCts = new CancellationTokenSource();
@@ -183,7 +185,7 @@ public partial class ConnectCommand : ICommand
         if (gameHandler is GameMessageHandler chain)
             chain.Next = cliHandler;
 
-        using var connection = new GoldsrcConnection(logger, authProvider, gameHandler);
+        using var connection = new GoldsrcConnection(logger, authProvider, gameHandler, useNetchanEncryption: useNetchanEncryption, longFragmentFields: longFragmentFields);
 
         if (!string.IsNullOrEmpty(PlayerName))
             connection.SetUserInfo("name", PlayerName);
