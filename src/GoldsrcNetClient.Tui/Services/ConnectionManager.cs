@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Network;
@@ -16,10 +15,12 @@ public enum ConnectionState
     Reconnecting
 }
 
+/// <summary>
+/// Owns the active <see cref="GoldsrcConnection"/> and reports progress through
+/// <see cref="GlobalLog"/>; the UI polls <see cref="State"/> on its timer.
+/// </summary>
 public sealed class ConnectionManager : IDisposable
 {
-    private readonly ConcurrentQueue<string> _outputQueue = new();
-    private readonly ConcurrentQueue<ConnectionState> _stateQueue = new();
     private GoldsrcConnection? _connection;
     private HalfLifeMessageHandler? _gameHandler;
     private CancellationTokenSource? _cts;
@@ -32,22 +33,16 @@ public sealed class ConnectionManager : IDisposable
     public ServerConfig? CurrentConfig => _currentConfig;
     public GoldsrcConnection? Connection => _connection;
 
-    public bool TryDequeueOutput(out string? message) => _outputQueue.TryDequeue(out message);
-    public bool TryDequeueState(out ConnectionState state) => _stateQueue.TryDequeue(out state);
-
     private void SetState(ConnectionState newState)
     {
         if (_state == newState) return;
         _state = newState;
-        _stateQueue.Enqueue(newState);
         GlobalLog.Write($"[{DateTime.Now:HH:mm:ss}] State: {newState}");
     }
 
     private void Emit(string message)
     {
-        var entry = $"[{DateTime.Now:HH:mm:ss}] {message}";
-        _outputQueue.Enqueue(entry);
-        GlobalLog.Write(entry);
+        GlobalLog.Write($"[{DateTime.Now:HH:mm:ss}] {message}");
     }
 
     public async Task ConnectAsync(ServerConfig config, ISteamAuthProvider? authProvider, string userInfo)

@@ -6,7 +6,7 @@ using Terminal.Gui.Views;
 
 namespace GoldsrcNetClient.Tui.Views;
 
-public sealed class ServerConfigDialog : Window
+public sealed class ServerConfigDialog : Window, IConfirmed
 {
     private readonly TextField _nameTf;
     private readonly TextField _hostTf;

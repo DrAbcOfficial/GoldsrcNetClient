@@ -4,7 +4,7 @@ using Terminal.Gui.Views;
 
 namespace GoldsrcNetClient.Tui.Views;
 
-public sealed class MoveEditorDialog : Window
+public sealed class MoveEditorDialog : Window, IConfirmed
 {
     private readonly CheckBox _attackCb;
     private readonly CheckBox _jumpCb;

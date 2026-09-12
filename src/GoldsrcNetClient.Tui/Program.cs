@@ -10,67 +10,70 @@ public static class Program
 {
     public static void Main(string[] args)
     {
+        // --smoke: headless render test — force the ANSI driver, render one frame, exit.
+        bool smoke = args.Contains("--smoke");
+
         IApplication app = Application.Create();
+        if (smoke)
+            app.ForceDriver = "ansi";
         app.Init();
         AppHolder.App = app;
 
-        AppData appData = new AppData();
-        ServerConfigStore configStore = new ServerConfigStore();
+        AppData appData = new();
+        ServerConfigStore configStore = new();
         configStore.Load();
+        UserInfoStore userInfoStore = new();
+        userInfoStore.Load();
 
-        ConnectionManager connManager = new ConnectionManager();
-        UserInfoStore userInfoStore = new UserInfoStore();
-        SettingsView settingsView = new SettingsView(appData, userInfoStore);
-        ConnectionView connectionView = new ConnectionView(appData, connManager, configStore, settingsView);
-        ConsoleView consoleView = new ConsoleView(connManager);
+        ConnectionManager connManager = new();
+        ServerBrowser browser = new(configStore);
+        browser.Reload();
 
-        Window window = new Window
+        MainView mainView = new(appData, connManager, configStore, browser, userInfoStore);
+
+        Window window = new()
         {
-            Title = "GoldsrcNetClient TUI",
+            Title = "GoldsrcNetClient",
             Width = Dim.Fill(),
             Height = Dim.Fill()
         };
+        window.Add(mainView);
 
-        settingsView.Title = "Settings";
-        connectionView.Title = "Connection";
-        consoleView.Title = "Console";
-
-        Tabs tabs = new()
+        if (smoke)
         {
-            X = 0, Y = 0,
-            Width = Dim.Fill(),
-            Height = Dim.Fill()
-        };
-
-        tabs.Add(settingsView);
-        tabs.Add(connectionView);
-        tabs.Add(consoleView);
-        tabs.Value = settingsView;
-
-        tabs.ValueChanged += (s, e) =>
-        {
-            if (e.NewValue == settingsView)
-                settingsView.FocusFirstField();
-            else if (e.NewValue != null)
+            // Render a few frames, then stop; dump the view tree for verification.
+            app.StopAfterFirstIteration = false;
+            app.AddTimeout(TimeSpan.FromMilliseconds(500), () =>
             {
-                settingsView.ApplyUserInfo();
-                connectionView.SyncUserInfoFromSettings();
-                connectionView.UpdateSteamInfo();
-            }
-        };
-
-        settingsView.LoggedIn += () =>
-        {
-            settingsView.ApplyUserInfo();
-            tabs.Value = connectionView;
-        };
-
-        window.Add(tabs);
+                app.RequestStop();
+                return false;
+            });
+        }
 
         app.Run(window);
 
+        if (smoke)
+        {
+            DumpViewTree(window);
+            return;
+        }
+
         connManager.Dispose();
-        (appData.AuthProvider as IDisposable)?.Dispose();
+        appData.DisposeProviders();
         app.Dispose();
+    }
+
+    /// <summary>
+    /// Prints every visible view with its screen position, size, title and text —
+    /// a layout-level snapshot for the <c>--smoke</c> headless check.
+    /// </summary>
+    private static void DumpViewTree(View view, int depth = 0)
+    {
+        string indent = new(' ', depth * 2);
+        string text = view.Text?.Replace("\n", "\\n") ?? "";
+        if (text.Length > 60) text = text[..60] + "…";
+        Console.WriteLine($"{indent}{view.GetType().Name} [{view.Frame.X},{view.Frame.Y} {view.Frame.Width}x{view.Frame.Height}] {(string.IsNullOrEmpty(view.Title) ? "" : $"Title='{view.Title}'")} {(string.IsNullOrEmpty(text) ? "" : $"Text='{text}'")}");
+        foreach (View sub in view.SubViews)
+            DumpViewTree(sub, depth + 1);
     }
 }
