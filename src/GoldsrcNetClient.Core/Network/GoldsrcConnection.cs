@@ -7,7 +7,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Channels;
 
 namespace GoldsrcNetClient.Core.Network;
 
@@ -61,8 +63,49 @@ public partial class GoldsrcConnection : IDisposable
     private bool _sentContinueLoading;
     private bool _sentSpawn;
     private UserInfoString _userInfo;
+    private readonly SplitPacketReassembler _splitReassembler = new();
+    private static readonly string? _messageDumpPath = Environment.GetEnvironmentVariable("GOLDSRC_MSGDUMP");
+    private static FileStream? _messageDumpStream = _messageDumpPath is null
+        ? null
+        : new FileStream(_messageDumpPath, FileMode.Append, FileAccess.Write, FileShare.Read);
 
     internal readonly ILogger<GoldsrcConnection> Logger;
+
+    /// <summary>Raises the Windows system timer resolution to 1 ms while any
+    /// connection is alive — the same thing the engine does. Without it
+    /// <c>Task.Delay(10)</c> sleeps 15-60 ms, the keepalive cadence develops
+    /// silence gaps above the server's <c>sv_failuretime</c> (0.05 s), and the
+    /// server stops draining its reliable stream towards us until it drops the
+    /// connection with <c>"Reliable channel overflowed"</c>.</summary>
+    private static int _timerResolutionRefs;
+
+    [LibraryImport("winmm.dll")]
+    private static partial uint timeBeginPeriod(uint period);
+
+    [LibraryImport("winmm.dll")]
+    private static partial uint timeEndPeriod(uint period);
+
+    private static void AcquireTimerResolution()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        lock (typeof(GoldsrcConnection))
+        {
+            if (_timerResolutionRefs++ == 0)
+                timeBeginPeriod(1);
+        }
+    }
+
+    private static void ReleaseTimerResolution()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        lock (typeof(GoldsrcConnection))
+        {
+            if (_timerResolutionRefs > 0 && --_timerResolutionRefs == 0)
+                timeEndPeriod(1);
+        }
+    }
 
     /// <summary>Raised when the server disconnects the client, with the server-supplied reason.</summary>
     public event Action<string>? OnServerDisconnect;
@@ -204,10 +247,13 @@ public partial class GoldsrcConnection : IDisposable
         _useNetchanEncryption = useNetchanEncryption;
         _useLongFragmentFields = longFragmentFields;
         _socket = new UdpClient(localPort);
-        // The signon burst is ~260 KB of back-to-back fragments; a small OS receive
-        // buffer drops most of it before the single-threaded receive loop can drain,
-        // which stalls the whole reliable stream.
-        _socket.Client.ReceiveBufferSize = 256 * 1024;
+        // The signon burst (delta descriptions + resource list + spawn baselines
+        // ≈ 150 KB compressed, delivered in fast bursts) plus the per-frame
+        // unreliable traffic must fit in the OS socket buffer while the receive
+        // loop is momentarily busy; a small buffer silently drops datagrams,
+        // which stalls the reliable-stream acknowledgement and ends in a
+        // "Reliable channel overflowed" drop.
+        _socket.Client.ReceiveBufferSize = 4 * 1024 * 1024;
         _handshake = new HandshakeNegotiator(_authProvider, Settings,
             (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask(), Logger);
         _messageParsers = BuildMessageParsers();
@@ -276,6 +322,7 @@ public partial class GoldsrcConnection : IDisposable
     /// <param name="ct">Cancellation token to stop the receive loop.</param>
     public async Task ConnectAsync(uint appId, string host, int port = 27015, CancellationToken ct = default)
     {
+        AcquireTimerResolution();
         Logger.LogDebug($"[State] Begin -> resolving {host}:{port}");
         var addresses = await Dns.GetHostAddressesAsync(host, ct);
         var ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork) ?? addresses[0];
@@ -297,17 +344,69 @@ public partial class GoldsrcConnection : IDisposable
         StartKeepAliveTask();
 
         Logger.LogDebug("[Loop] entering receive loop");
-        while (!ct.IsCancellationRequested)
-        {
-            Logger.LogTrace("[Loop] waiting for packet...");
-            var result = await _socket.ReceiveAsync(ct);
-            var data = result.Buffer;
-            var len = data.Length;
-            var from = result.RemoteEndPoint;
 
-            Logger.LogDebug($"[Loop] received {len} bytes from {from}");
-            if (!ep.Equals(from)) continue;
-            if (len < 4) continue;
+        // Receive and process are decoupled: the receive loop only enqueues
+        // datagrams while a single consumer task runs the netchan/message
+        // parsing in order. Without this, a slow parse (large signon blocks)
+        // blocks the loop, the OS socket buffer overflows and datagrams are
+        // silently dropped — which stalls the server's reliable-stream
+        // acknowledgement and ends in a "Reliable channel overflowed" drop.
+        var inbound = Channel.CreateUnbounded<byte[]>(
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+        var messages = Channel.CreateUnbounded<byte[]>(
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+
+        // BZ2 decompression of the big signon blocks takes ~100 ms per block and
+        // must not delay the netchan acknowledgement path, or the server's
+        // reliable-stream resend machinery stalls and the connection is dropped
+        // with "Reliable channel overflowed". Decompressed message streams are
+        // therefore queued (in order) and parsed on a separate consumer task.
+        var messageConsumer = Task.Run(async () =>
+        {
+            var reader = messages.Reader;
+            while (await reader.WaitToReadAsync(ct))
+            {
+                while (reader.TryRead(out var message))
+                {
+                    try
+                    {
+                        ProcessConnected(ep, message);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogWarning($"[Loop] message processing error: {ex.Message}");
+                    }
+                }
+            }
+        }, CancellationToken.None);
+
+        var consumer = Task.Run(async () =>
+        {
+            var reader = inbound.Reader;
+            while (await reader.WaitToReadAsync(ct))
+            {
+                while (reader.TryRead(out var item))
+                {
+                    try
+                    {
+                        session.Channel.ProcessIncoming(item, message => messages.Writer.TryWrite(message));
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogWarning($"[Loop] packet processing error: {ex.Message}");
+                    }
+                }
+            }
+        }, CancellationToken.None);
+
+        // One datagram can be either connectionless, a UDP-level split fragment,
+        // or netchan-sequenced. Reassembled split packets re-enter here as
+        // ordinary datagrams, exactly like the engine's NET_GetLong path.
+        async Task HandleDatagramAsync(byte[] data)
+        {
+            var len = data.Length;
+            if (len < 4)
+                return;
 
             uint header = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4));
 
@@ -326,13 +425,50 @@ public partial class GoldsrcConnection : IDisposable
             }
             else if (header == MessageConstants.SplitMarker)
             {
-                Logger.LogWarning($"[Fragment] received OOB split packet (len={len}), reassembly not yet implemented");
+                // UDP-level split of one oversized datagram (NET_GetLong). The
+                // reassembled bytes are an ordinary packet and must re-enter
+                // the classification path — dropping them stalls the netchan
+                // acknowledgement and ends in "Reliable channel overflowed".
+                Logger.LogDebug("[Fragment] split packet len={Len} head={Hex}",
+                    len, Convert.ToHexString(data.AsSpan(0, Math.Min(len, 24))));
+                var whole = _splitReassembler.TryAdd(data);
+                if (whole != null)
+                {
+                    Logger.LogDebug("[Fragment] reassembled {Len} bytes from split packets", whole.Length);
+                    await HandleDatagramAsync(whole);
+                }
             }
             else
             {
-                OnDataPacket?.Invoke(this, data.ToArray());
-                session.Channel.ProcessIncoming(data.ToArray(), message => ProcessConnected(ep, message));
+                OnDataPacket?.Invoke(this, data);
+                await inbound.Writer.WriteAsync(data, ct);
             }
+        }
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                Logger.LogTrace("[Loop] waiting for packet...");
+                var result = await _socket.ReceiveAsync(ct);
+                var data = result.Buffer;
+                var len = data.Length;
+                var from = result.RemoteEndPoint;
+
+                Logger.LogTrace($"[Loop] received {len} bytes from {from}");
+                if (!ep.Equals(from)) continue;
+                if (len < 4) continue;
+
+                await HandleDatagramAsync(data.ToArray());
+            }
+        }
+        finally
+        {
+            ReleaseTimerResolution();
+            inbound.Writer.TryComplete();
+            try { await consumer.WaitAsync(TimeSpan.FromSeconds(2)); } catch { /* flush best-effort */ }
+            messages.Writer.TryComplete();
+            try { await messageConsumer.WaitAsync(TimeSpan.FromSeconds(2)); } catch { /* flush best-effort */ }
         }
     }
 
@@ -367,11 +503,26 @@ public partial class GoldsrcConnection : IDisposable
         _ = Task.Run(async () =>
         {
             Logger.LogDebug("[KeepAlive] starting keepalive task");
+            // Self-correcting deadline loop on a fixed MoveIntervalMs grid. An
+            // occasional overslept Task.Delay skips the missed ticks (no catch-up
+            // burst) and realigns to now. The cadence must stay well under the
+            // server's sv_failuretime (50 ms): a client the server hasn't heard
+            // from within that window gets its outgoing stream throttled, the
+            // reliable queue then fills faster than it drains, and the server
+            // drops us with "Reliable channel overflowed". The 1 ms system timer
+            // resolution (AcquireTimerResolution) is what makes the short
+            // interval actually achievable on Windows.
+            long nextSendMs = Environment.TickCount64;
             while (!token.IsCancellationRequested)
             {
                 try
                 {
-                    await Task.Delay(Settings.MoveIntervalMs, token);
+                    long delay = nextSendMs - Environment.TickCount64;
+                    if (delay > 0)
+                        await Task.Delay((int)Math.Min(delay, 100), token);
+                    else if (nextSendMs + Settings.MoveIntervalMs < Environment.TickCount64)
+                        nextSendMs = Environment.TickCount64; // overslept: realign, don't burst
+                    nextSendMs += Settings.MoveIntervalMs;
                     if (_sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session))
                         session.Channel.SendKeepAlive();
                 }

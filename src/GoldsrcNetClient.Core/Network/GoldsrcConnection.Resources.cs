@@ -9,9 +9,20 @@ public partial class GoldsrcConnection
 {
     private void ProcessResourceList(ConnectionContext ctx, MessageReader reader)
     {
+        // Sven Co-op widened two fields vs. Valve GoldSrc (Ghidra: SV_SendResources
+        // FUN_01da4200 / consistency FUN_01db83a0 in hw.dll build 10257):
+        //   - resource count:       16 bits (Valve/ReHLDS: 12, RESOURCE_INDEX_BITS)
+        //   - consistency abs index: 16 bits (Valve/ReHLDS: 10)
+        // Everything else matches ReHLDS's SV_SendResources: type 4 bits, name as
+        // bit-string, index 12, download size 24, flags 3, MD5 16B if RES_CUSTOM,
+        // reserved 1+32B, consistency delta 5 bits with a 1-bit short/abs selector.
+        int countBits = _useLongFragmentFields ? 16 : 12;
+        int absIndexBits = _useLongFragmentFields ? 16 : 10;
+
         int bitIdx = reader.Offset * 8;
         uint resourceCount = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref resourceCount, 12)) return;
+        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref resourceCount, countBits)) return;
+        Logger.LogDebug($"[ResourceList] resourceCount={resourceCount}");
 
         ctx.Resources = new ResourceInfo[resourceCount];
         for (uint i = 0; i < resourceCount; i++)
@@ -81,7 +92,7 @@ public partial class GoldsrcConnection
                 {
                     lastIndex = 0;
                     uint idx = 0;
-                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref idx, 10)) return;
+                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref idx, absIndexBits)) return;
                     lastIndex = (int)idx;
                 }
                 else

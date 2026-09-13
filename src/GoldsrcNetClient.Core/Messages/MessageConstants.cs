@@ -14,6 +14,27 @@ public static class MessageConstants
     /// <summary>Magic header value for split/fragmented packets.</summary>
     public const uint SplitMarker = 0xFFFFFFFE;
 
+    /// <summary>Largest datagram the engine sends without UDP-level splitting
+    /// (<c>MAX_ROUTEABLE_PACKET</c>). Anything larger is split by the sender's
+    /// transport into <see cref="SplitPayloadSize"/>-byte fragments, each
+    /// prefixed with the <see cref="SplitHeaderSize"/>-byte
+    /// <see cref="SplitMarker"/> header.</summary>
+    public const int MaxRouteablePacket = 1400;
+
+    /// <summary>Header size of one UDP split fragment as emitted by the Sven Co-op
+    /// engine (wire-verified, build 5.0.1.8/10257):
+    /// <c>[uint32 0xFFFFFFFE][int32 splitSetId][byte fragmentCount][byte fragmentNumber]</c>.
+    /// Note the Valve/ReHLDS layout differs (9 bytes, fragment number and count
+    /// packed into one nibble-split byte).</summary>
+    public const int SplitHeaderSize = 10;
+
+    /// <summary>Payload bytes carried by each non-final split fragment
+    /// (<c>MAX_ROUTEABLE_PACKET - SplitHeaderSize</c>).</summary>
+    public const int SplitPayloadSize = MaxRouteablePacket - SplitHeaderSize;
+
+    /// <summary>Maximum size of a reassembled datagram (<c>MAX_UDP_PACKET</c>).</summary>
+    public const int MaxUdpPacket = 4010;
+
     /// <summary>Maximum number of bits used to encode an entity index (supports up to 2048 entities).</summary>
     public const int MaxEdictBits = 11;
 

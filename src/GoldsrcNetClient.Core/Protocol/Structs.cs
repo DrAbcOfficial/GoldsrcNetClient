@@ -127,6 +127,33 @@ public struct ResourceInfo
 }
 
 /// <summary>
+/// One field entry as transmitted inside a <c>svc_deltadescription</c> message.
+/// The engine sends these delta-encoded against a fixed 7-entry meta table
+/// (fieldType 32b, fieldName string, fieldOffset 16b, fieldSize 8b,
+/// significant_bits 8b, premultiply/postmultiply 32b as value*4000).
+/// </summary>
+public struct DeltaFieldDescription
+{
+    /// <summary>Field name (e.g. "origin[0]").</summary>
+    public string FieldName;
+    /// <summary>Wire type flags (DT_* values, including the DT_SIGNED bit).</summary>
+    public DeltaFieldFlag FieldType;
+    /// <summary>Byte offset of the field inside the engine's struct (informational).</summary>
+    public int FieldOffset;
+    /// <summary>Byte size of the field inside the engine's struct.</summary>
+    public int FieldSize;
+    /// <summary>Number of significant bits used to encode this field on the wire.</summary>
+    public int SignificantBits;
+    /// <summary>Premultiply scaling factor (received as value*4000).</summary>
+    public float Premultiply;
+    /// <summary>Post-multiply scaling factor (received as value*4000).</summary>
+    public float PostMultiply;
+
+    /// <summary>Converts this wire description into a <see cref="DeltaField"/> for the skip-parser.</summary>
+    public DeltaField ToDeltaField() => new(FieldName, FieldType, (byte)SignificantBits, Premultiply);
+}
+
+/// <summary>
 /// Describes a single field in a delta-compressed data type.
 /// </summary>
 public struct DeltaField

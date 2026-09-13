@@ -23,12 +23,6 @@ public sealed class NetchanChannel
     /// (some networks misbehave on tiny UDP datagrams).</summary>
     internal const int MinPacketSize = 16;
 
-    /// <summary>Minimum interval between retransmissions of the same reliable payload.
-    /// The payload rides every keepalive in the reference engine, but each received
-    /// copy toggles the server's acknowledgement counter, so limiting retransmission
-    /// frequency keeps the acknowledgement parity clean on lossy, high-latency links.</summary>
-    internal const int ReliableRetransmitMs = 500;
-
     private readonly ILogger _logger;
     private readonly Func<ReadOnlyMemory<byte>, IPEndPoint, CancellationToken, Task> _send;
     private readonly IPEndPoint _remote;
@@ -43,9 +37,9 @@ public sealed class NetchanChannel
     private uint _incomingSequence;
     private uint _incomingAcknowledged;
     private uint _incomingReliableSequence;
+    private uint _incomingReliableAck;
     private uint _outgoingReliableSequence;
     private uint _lastReliableSequence;
-    private long _lastReliableTransmitMs;
     private byte[]? _pendingReliable;
 
     /// <summary>
@@ -193,12 +187,11 @@ public sealed class NetchanChannel
 
             _incomingSequence = seq;
             _incomingAcknowledged = ack;
+            _incomingReliableAck = reliableAck;
 
-            // Track the server's reliable-message counter. The server toggles it once
-            // per NEW reliable transmission and we toggle on every reliable packet
-            // received; if the server is retransmitting a message our bit keeps
-            // alternating, which brings the acknowledgement back into phase within a
-            // couple of copies — the same self-correcting behaviour as the engine.
+            // Track the server's reliable-message counter. The engine toggles it once
+            // per packet carrying the reliable flag (new message or retransmission),
+            // which lets the acknowledgement parity self-correct after loss.
             if (reliableMessage)
             {
                 _incomingReliableSequence ^= 1;
@@ -270,6 +263,17 @@ public sealed class NetchanChannel
     /// </summary>
     private void Transmit(CancellationToken ct)
     {
+        // Retransmit the pending reliable payload only on positive evidence of
+        // loss, exactly like Netchan_Transmit in the engine: the remote has
+        // acknowledged a packet sent after the one carrying the payload, yet its
+        // reliable-ack parity still doesn't match ours. Blind timer-based
+        // retransmission instead toggles the remote's parity per duplicate and
+        // ping-pongs the acknowledgement out of phase (each duplicate is also
+        // processed again server-side).
+        bool resendPending = _pendingReliable != null
+                             && _incomingAcknowledged > _lastReliableSequence
+                             && _incomingReliableAck != _outgoingReliableSequence;
+
         bool pulled = false;
         if (_pendingReliable == null && _reliableQueue.Count > 0)
         {
@@ -278,15 +282,9 @@ public sealed class NetchanChannel
             pulled = true;
         }
 
-        // A freshly queued message is transmitted immediately; retransmissions of an
-        // unacknowledged message are throttled.
-        bool sendReliable = _pendingReliable != null &&
-                            (pulled || Environment.TickCount64 - _lastReliableTransmitMs >= ReliableRetransmitMs);
+        bool sendReliable = _pendingReliable != null && (pulled || resendPending);
         if (sendReliable)
-        {
             _lastReliableSequence = _srcSequence;
-            _lastReliableTransmitMs = Environment.TickCount64;
-        }
 
         bool includePayload = sendReliable && _pendingReliable != null;
 

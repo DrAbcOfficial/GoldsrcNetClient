@@ -17,10 +17,25 @@ public partial class GoldsrcConnection
     {
         var ctx = _sessions[ep].Context;
 
+        // Diagnostics: set GOLDSRC_MSGDUMP=<path> to append every dispatched
+        // message stream to a binary file (length-prefixed records). Far cheaper
+        // than console logging, so it does not destabilise the receive loop.
+        var dumpStream = _messageDumpStream;
+        if (dumpStream != null)
+        {
+            try
+            {
+                dumpStream.Write(BitConverter.GetBytes(data.Length), 0, 4);
+                dumpStream.Write(data, 0, data.Length);
+                dumpStream.Flush();
+            }
+            catch { /* diagnostics only */ }
+        }
+
         var reader = new MessageReader(data, data.Length);
         Logger.LogDebug($"[Connected] processing {data.Length} bytes");
         if (data.Length > 16)
-            Logger.LogDebug($"[Connected] head: {Convert.ToHexString(data.AsSpan(0, Math.Min(data.Length, 48)).ToArray())}");
+            Logger.LogDebug($"[Connected] head: {Convert.ToHexString(data.AsSpan(0, Math.Min(data.Length, 512)).ToArray())}");
 
         while (reader.Remaining > 0)
         {
@@ -106,19 +121,19 @@ public partial class GoldsrcConnection
         },
 
         [(byte)ServerMessageType.ServerInfo] = (ctx, reader) => HandleServerInfo(ctx, reader),
-        [(byte)ServerMessageType.DeltaDescription] = (_, reader) => HandleDeltaDescription(reader),
+        [(byte)ServerMessageType.DeltaDescription] = (ctx, reader) => HandleDeltaDescription(ctx, reader),
         [(byte)ServerMessageType.NewMoveVars] = (_, reader) => HandleNewMoveVars(reader),
         [(byte)ServerMessageType.NewUserMsg] = (_, reader) => HandleNewUserMsg(reader),
         [(byte)ServerMessageType.UpdateUserInfo] = (ctx, reader) => HandleUpdateUserInfo(ctx, reader),
         [(byte)ServerMessageType.ResourceRequest] = (ctx, reader) => HandleResourceRequest(ctx, reader),
         [(byte)ServerMessageType.SpawnBaseline] = (ctx, reader) => HandleSpawnBaseline(ctx, reader),
-        [(byte)ServerMessageType.ClientData] = (_, reader) => HandleClientData(reader),
+        [(byte)ServerMessageType.ClientData] = (ctx, reader) => HandleClientData(ctx, reader),
         [(byte)ServerMessageType.SignOnNum] = (_, reader) => HandleSignOnNum(reader),
         [(byte)ServerMessageType.VoiceInit] = (_, reader) => HandleVoiceInit(reader),
         [(byte)ServerMessageType.Sound] = (_, reader) => HandleSound(reader),
         [(byte)ServerMessageType.Customization] = (_, reader) => HandleCustomization(reader),
-        [(byte)ServerMessageType.Event] = (_, reader) => HandleEvent(reader, reliable: false),
-        [(byte)ServerMessageType.EventReliable] = (_, reader) => HandleEvent(reader, reliable: true),
+        [(byte)ServerMessageType.Event] = (ctx, reader) => HandleEvent(ctx, reader, reliable: false),
+        [(byte)ServerMessageType.EventReliable] = (ctx, reader) => HandleEvent(ctx, reader, reliable: true),
         [(byte)ServerMessageType.Pings] = (_, reader) => HandlePings(reader),
         [(byte)ServerMessageType.SendCvarValue] = (_, reader) => HandleSendCvarValue(reader),
         [(byte)ServerMessageType.SendCvarValue2] = (_, reader) => HandleSendCvarValue2(reader),
@@ -131,8 +146,8 @@ public partial class GoldsrcConnection
         [(byte)ServerMessageType.RoomType] = (_, reader) => CheckedSkip(reader, "RoomType", 2),
         [(byte)ServerMessageType.CrosshairAngle] = (_, reader) => CheckedSkip(reader, "CrosshairAngle", 2),
         [(byte)ServerMessageType.SoundFade] = (_, reader) => CheckedSkip(reader, "SoundFade", 4),
-        [(byte)ServerMessageType.TempEntity] = (_, reader) => CheckedSkip(reader, "TempEntity", 1, 2, 2, 2),
-        [(byte)ServerMessageType.Damage] = (_, reader) => CheckedSkip(reader, "Damage", 8, 3),
+        [(byte)ServerMessageType.TempEntity] = (_, reader) => HandleTempEntity(reader),
+        [(byte)ServerMessageType.Damage] = (_, reader) => HandleDamage(reader),
         [(byte)ServerMessageType.SpawnStaticSound] = (_, reader) => CheckedSkip(reader, "SpawnStaticSound", 14),
 
         [(byte)ServerMessageType.Version] = (_, reader) =>
@@ -368,9 +383,23 @@ public partial class GoldsrcConnection
         // overflowed") within ~5 seconds.
         int unmungeKey = (-1 - ctx.PlayerNumber) & 0xFF;
         Logger.LogDebug($"[ServerInfo] proto={si.ProtocolVersion}, spawnCount={si.SpawnCount}, maxClients={si.MaxClients}, playerNum={si.PlayerNumber}, worldmapCrcRaw=0x{si.Munge3WorldmapCrc:X8}, unmungeKey=0x{unmungeKey:X2}");
-        MungeEngine.UnMunge3(crcBytes, 4, unmungeKey);
-        ctx.WorldmapCrc = BitConverter.ToUInt32(crcBytes);
-        Logger.LogDebug($"[ServerInfo] worldmapCrcUnMunged=0x{ctx.WorldmapCrc:X8}");
+        if (_useLongFragmentFields)
+        {
+            // Sven Co-op sends the true worldmap CRC in serverinfo and the real
+            // client echoes it back verbatim in the spawn command (wire-verified:
+            // "spawn 1 1038585952" equals the map CRC the server logged). The
+            // UnMunge3 pass would corrupt it here, and the corrupted value then
+            // fails the server's periodic map check — which drops us with a fake
+            // "Reliable channel overflowed" a few seconds after entering the game.
+            ctx.WorldmapCrc = si.Munge3WorldmapCrc;
+            Logger.LogDebug($"[ServerInfo] Sven branch: keeping raw worldmap CRC=0x{ctx.WorldmapCrc:X8}");
+        }
+        else
+        {
+            MungeEngine.UnMunge3(crcBytes, 4, unmungeKey);
+            ctx.WorldmapCrc = BitConverter.ToUInt32(crcBytes);
+            Logger.LogDebug($"[ServerInfo] worldmapCrcUnMunged=0x{ctx.WorldmapCrc:X8}");
+        }
 
         for (int i = 0; i < 4; i++)
             reader.ReadString();
@@ -390,13 +419,14 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private bool HandleEvent(MessageReader reader, bool reliable)
+    private bool HandleEvent(ConnectionContext ctx, MessageReader reader, bool reliable)
     {
         // svc_event:      5 bits count, then per event: 10 bits index,
         //                 1 bit ent-in-pack -> 11 bits packet index,
         //                 1 bit has-args -> delta event_args_t, 1 bit has-fire -> 16 bits.
         // svc_event_reliable: same per-event layout without the count and packet index.
         int bitIdx = reader.Offset * 8;
+        var eventDelta = ResolveDelta(ctx, DeltaDefinitions.Event);
         uint count = 1;
         if (!reliable && !BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref count, 5))
             return false;
@@ -421,10 +451,10 @@ public partial class GoldsrcConnection
             {
                 uint hasArgs = 0;
                 if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasArgs, 1)) return false;
-                if (hasArgs != 0 && !DeltaReader.ReadFields(DeltaDefinitions.Event, reader.Data, reader.Size, ref bitIdx))
+                if (hasArgs != 0 && !DeltaReader.ReadFields(eventDelta, reader.Data, reader.Size, ref bitIdx, DeltaByteCountBits))
                     return false;
             }
-            else if (!DeltaReader.ReadFields(DeltaDefinitions.Event, reader.Data, reader.Size, ref bitIdx))
+            else if (!DeltaReader.ReadFields(eventDelta, reader.Data, reader.Size, ref bitIdx, DeltaByteCountBits))
             {
                 return false;
             }
@@ -444,14 +474,19 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private bool HandleDeltaDescription(MessageReader reader)
+    /// <summary>
+    /// Parses one <c>svc_deltadescription</c> and registers the decoded field
+    /// table in <see cref="ConnectionContext.DeltaTables"/>. The engine writes
+    /// every table inside SV_SendServerinfo, before any delta-compressed
+    /// payload, so consumers can rely on the live definitions being present.
+    /// Each field entry is itself a delta record against the engine's fixed
+    /// meta description (see <see cref="DeltaReader.TryReadFieldDescription"/>).
+    /// </summary>
+    private bool HandleDeltaDescription(ConnectionContext ctx, MessageReader reader)
     {
         string name = reader.ReadString();
         Logger.LogDebug($"[DeltaDescription] deltaName=\"{name}\"");
 
-        // Field entries are themselves delta-encoded against the meta
-        // delta_description_t definition. Unknown delta names are still parsed
-        // field-by-field so the message stream stays in sync.
         int bitIdx = reader.Offset * 8;
         uint fieldCount = 0;
         if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref fieldCount, 16))
@@ -459,21 +494,80 @@ public partial class GoldsrcConnection
             Logger.LogWarning("[DeltaDescription] failed reading fieldCount");
             return false;
         }
-        Logger.LogDebug($"[DeltaDescription] fieldCount={fieldCount}");
+        if (fieldCount > 96)
+        {
+            Logger.LogWarning($"[DeltaDescription] implausible fieldCount={fieldCount} for \"{name}\"");
+            return false;
+        }
 
+        var fields = new List<DeltaField>((int)fieldCount);
         for (uint f = 0; f < fieldCount; f++)
         {
-            int fieldStartBit = bitIdx;
-            if (!DeltaReader.ReadFieldDescription(reader.Data, reader.Size, ref bitIdx))
+            if (!DeltaReader.TryReadFieldDescription(reader.Data, reader.Size, ref bitIdx, DeltaByteCountBits,
+                    out var desc))
             {
-                Logger.LogWarning($"[DeltaDescription] failed parsing field {f}");
+                Logger.LogWarning($"[DeltaDescription] failed parsing field {f} of \"{name}\"");
                 return false;
             }
-            Logger.LogDebug($"[DeltaDescription] field {f}: {bitIdx - fieldStartBit} bits");
+            fields.Add(desc.ToDeltaField());
+            Logger.LogDebug($"[DeltaDescription] \"{name}\"[{f}] {desc.FieldName} type={desc.FieldType} bits={desc.SignificantBits} pre={desc.Premultiply} post={desc.PostMultiply}");
         }
 
         reader.Offset = (bitIdx + 7) / 8;
-        Logger.LogDebug($"[DeltaDescription] done, new offset={reader.Offset}");
+        ctx.DeltaTables[name] = new DeltaType(name, (byte)fieldCount, fields.ToArray());
+        Logger.LogDebug($"[DeltaDescription] registered \"{name}\" with {fieldCount} fields (offset={reader.Offset})");
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves the live delta table received via svc_deltadescription, falling
+    /// back to the compiled Valve layout when the server has not sent one
+    /// (e.g. a message arriving before the descriptions, or hand-crafted tests).
+    /// </summary>
+    private DeltaType ResolveDelta(ConnectionContext ctx, DeltaType fallback)
+        => ctx.DeltaTables.TryGetValue(fallback.DeltaName, out var dt) ? dt : fallback;
+
+    /// <summary>
+    /// Width of the delta bitmap byte-count prefix: Sven's engine writes
+    /// 4 bits (DELTA_WriteDelta @ hw.dll 0x1d44f10, Ghidra-verified), Valve
+    /// branches and ReHLDS write 3.
+    /// </summary>
+    private int DeltaByteCountBits => _useLongFragmentFields ? 4 : 3;
+
+    /// <summary>
+    /// svc_tempentity: one effect type byte followed by a bit-packed payload
+    /// whose layout depends on the type. See <see cref="TempEntityParser.Skip"/>.
+    /// </summary>
+    private bool HandleTempEntity(MessageReader reader)
+    {
+        int bitIdx = reader.Offset * 8;
+        if (!TempEntityParser.Skip(reader.Data, ref bitIdx, reader.Size, _useLongFragmentFields, Logger))
+        {
+            Logger.LogWarning("[TempEntity] unparseable effect, aborting packet");
+            return false;
+        }
+        reader.Offset = (bitIdx + 7) / 8;
+        return true;
+    }
+
+    /// <summary>
+    /// svc_damage (Quake-inherited layout): armor byte, blood byte, then three
+    /// bit coordinates for the damage origin — always present.
+    /// </summary>
+    private bool HandleDamage(MessageReader reader)
+    {
+        int bitIdx = reader.Offset * 8;
+        uint armor = 0, blood = 0;
+        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref armor, 8)) return false;
+        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref blood, 8)) return false;
+        for (int i = 0; i < 3; i++)
+        {
+            float c = 0;
+            _ = _useLongFragmentFields
+                ? BitReader.ReadCoordWide(reader.Data, ref bitIdx, reader.Size, ref c)
+                : BitReader.ReadBitCoord(reader.Data, ref bitIdx, reader.Size, ref c);
+        }
+        reader.Offset = (bitIdx + 7) / 8;
         return true;
     }
 
@@ -576,21 +670,33 @@ public partial class GoldsrcConnection
 
     private bool HandleSpawnBaseline(ConnectionContext ctx, MessageReader reader)
     {
+        // Sven widened the entity-number field: hw.dll's SV_CreateBaseline reads
+        // the width from a variable (FUN_01da9fa0) with the 0xFFFF/16-bit end
+        // marker unchanged. Wire-verified (message dump): 13 bits (8192 edicts)
+        // cleanly enumerates every baseline and hits the end marker; Valve
+        // keeps 11 bits (2048 edicts).
+        int entBits = _useLongFragmentFields ? 13 : 11;
+        int maxEntity = (1 << entBits) - 1;
+
         int bitIdx = reader.Offset * 8;
         int entityCount = 0;
+        if (Environment.GetEnvironmentVariable("GOLDSRC_SKIPBASELINE") == "1")
+        {
+            Logger.LogWarning("[SpawnBaseline] skipped (diagnostics)");
+            return true;
+        }
         while (true)
         {
             uint entityNumber = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entityNumber, 11))
+            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entityNumber, entBits))
             {
                 Logger.LogWarning($"[SpawnBaseline] failed reading entityNumber at count={entityCount}");
                 return false;
             }
 
-            int maxEntity = (1 << 11) - 1;
             if (entityNumber == maxEntity)
             {
-                bitIdx += 5;
+                bitIdx += 16 - entBits;
                 break;
             }
 
@@ -605,22 +711,25 @@ public partial class GoldsrcConnection
             if ((entityType & 1) != 0)
             {
                 bool isPlayer = entityNumber >= 1 && entityNumber <= ctx.MaxClients;
-                dt = isPlayer ? DeltaDefinitions.EntityStatePlayer : DeltaDefinitions.EntityState;
+                dt = isPlayer
+                    ? ResolveDelta(ctx, DeltaDefinitions.EntityStatePlayer)
+                    : ResolveDelta(ctx, DeltaDefinitions.EntityState);
             }
             else
             {
-                dt = DeltaDefinitions.CustomEntityState;
+                dt = ResolveDelta(ctx, DeltaDefinitions.CustomEntityState);
             }
 
-            DeltaReader.ReadFields(dt, reader.Data, reader.Size, ref bitIdx);
+            DeltaReader.ReadFields(dt, reader.Data, reader.Size, ref bitIdx, DeltaByteCountBits);
             entityCount++;
         }
 
         uint baselineCount = 0;
         BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref baselineCount, 6);
         Logger.LogDebug($"[SpawnBaseline] entities={entityCount}, baselineCount={baselineCount}");
+        var baselineDelta = ResolveDelta(ctx, DeltaDefinitions.EntityState);
         for (uint ei = 0; ei < baselineCount; ei++)
-            DeltaReader.ReadFields(DeltaDefinitions.EntityState, reader.Data, reader.Size, ref bitIdx);
+            DeltaReader.ReadFields(baselineDelta, reader.Data, reader.Size, ref bitIdx, DeltaByteCountBits);
 
         reader.Offset = (bitIdx + 7) / 8;
         Logger.LogDebug($"[SpawnBaseline] done, totalBits={bitIdx}, newOffset={reader.Offset}");
@@ -674,7 +783,7 @@ public partial class GoldsrcConnection
         }
     }
 
-    private bool HandleClientData(MessageReader reader)
+    private bool HandleClientData(ConnectionContext ctx, MessageReader reader)
     {
         int bitIdx = reader.Offset * 8;
         uint haveDeltaSeq = 0;
@@ -685,7 +794,9 @@ public partial class GoldsrcConnection
             if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref deltaSeq, 8)) return false;
             Logger.LogDebug($"[ClientData] deltaSeq={deltaSeq}");
         }
-        DeltaReader.ReadFields(DeltaDefinitions.ClientData, reader.Data, reader.Size, ref bitIdx);
+        var clientDelta = ResolveDelta(ctx, DeltaDefinitions.ClientData);
+        var weaponDelta = ResolveDelta(ctx, DeltaDefinitions.WeaponData);
+        DeltaReader.ReadFields(clientDelta, reader.Data, reader.Size, ref bitIdx, DeltaByteCountBits);
 
         int weaponCount = 0;
         while (true)
@@ -695,7 +806,7 @@ public partial class GoldsrcConnection
             if (haveDelta == 0) break;
             uint index = 0;
             if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref index, 6)) return false;
-            DeltaReader.ReadFields(DeltaDefinitions.WeaponData, reader.Data, reader.Size, ref bitIdx);
+            DeltaReader.ReadFields(weaponDelta, reader.Data, reader.Size, ref bitIdx, DeltaByteCountBits);
             weaponCount++;
         }
         Logger.LogDebug($"[ClientData] done, weaponDeltas={weaponCount}");
@@ -730,6 +841,15 @@ public partial class GoldsrcConnection
         return true;
     }
 
+    /// <summary>
+    /// Reads one coordinate with the width matching the target engine branch:
+    /// Sven's 32-bit 16.16 fixed point, or Valve's 18-bit bit coordinate.
+    /// </summary>
+    private bool ReadCoord(byte[] data, ref int bitIdx, int size, ref float value)
+        => _useLongFragmentFields
+            ? BitReader.ReadCoordWide(data, ref bitIdx, size, ref value)
+            : BitReader.ReadBitCoord(data, ref bitIdx, size, ref value);
+
     private bool HandleSound(MessageReader reader)
     {
         int bitIdx = reader.Offset * 8;
@@ -749,8 +869,11 @@ public partial class GoldsrcConnection
 
         uint channel = 0;
         if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref channel, 3)) return false;
+        // Entity index uses the same entity-bits width as the baselines
+        // (Sven: 13 bits for 8192 edicts, Valve: 11 bits for 2048).
+        int entBits = _useLongFragmentFields ? 13 : 11;
         uint entity = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entity, 11)) return false;
+        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entity, entBits)) return false;
         uint soundNum = 0;
         int snBits = (fieldMask & SoundFlags.LargeIndex) != 0 ? 16 : 8;
         if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref soundNum, snBits)) return false;
@@ -760,9 +883,9 @@ public partial class GoldsrcConnection
         BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref xf, 1);
         BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref yf, 1);
         BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref zf, 1);
-        if (xf != 0) BitReader.ReadBitCoord(reader.Data, ref bitIdx, reader.Size, ref ox);
-        if (yf != 0) BitReader.ReadBitCoord(reader.Data, ref bitIdx, reader.Size, ref oy);
-        if (zf != 0) BitReader.ReadBitCoord(reader.Data, ref bitIdx, reader.Size, ref oz);
+        if (xf != 0) ReadCoord(reader.Data, ref bitIdx, reader.Size, ref ox);
+        if (yf != 0) ReadCoord(reader.Data, ref bitIdx, reader.Size, ref oy);
+        if (zf != 0) ReadCoord(reader.Data, ref bitIdx, reader.Size, ref oz);
 
         if ((fieldMask & SoundFlags.Pitch) != 0)
         {

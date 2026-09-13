@@ -181,6 +181,23 @@ public static class BitReader
         return true;
     }
 
+    /// <summary>
+    /// Reads a Sven Co-op wide coordinate: a raw 32-bit little-endian 16.16
+    /// fixed-point value (integer range ±32768, versus Half-Life's 18-bit
+    /// bit-coordinate with a ±4096 integer range). Wire-verified against
+    /// svc_tempentity TE_BSPDECAL records where two decals on the same wall
+    /// share an identical y coordinate.
+    /// </summary>
+    public static bool ReadCoordWide(byte[] source, ref int sourceBitIndex, int sourceSize,
+        ref float f)
+    {
+        uint raw = 0;
+        if (!ReadBits(source, ref sourceBitIndex, sourceSize, ref raw, 32))
+            return false;
+        f = (int)raw / 65536.0f;
+        return true;
+    }
+
     /// <summary>Reads a GoldSrc compressed angle from the bitstream.</summary>
     /// <param name="source">Source byte array.</param>
     /// <param name="sourceBitIndex">Current bit position. Advanced after reading.</param>

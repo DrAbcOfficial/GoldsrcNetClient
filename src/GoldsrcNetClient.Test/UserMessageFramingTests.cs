@@ -40,9 +40,9 @@ public class UserMessageFramingTests
     {
         var stream = new List<byte>();
         stream.AddRange(Registration(0x4C, 0xFF, "SayText"));
-        // After the registration block: SayText with length 4, payload 01 02 03 04,
-        // then an svc_print that must survive the SayText dispatch.
-        stream.AddRange([0x04, 0x01, 0x02, 0x03, 0x04]);
+        // After the registration block: SayText with 16-bit length 4, payload
+        // 01 02 03 04, then an svc_print that must survive the SayText dispatch.
+        stream.AddRange([0x04, 0x00, 0x01, 0x02, 0x03, 0x04]);
         stream.AddRange([(byte)ServerMessageType.Print, (byte)'h', (byte)'i', 0]);
 
         using var conn = new GoldsrcConnection();
@@ -52,16 +52,16 @@ public class UserMessageFramingTests
         var reader = new MessageReader(stream.ToArray(), stream.Count) { Offset = 18 };
 
         Assert.True(handler.HandleMessage(conn, 0x4C, reader));
-        Assert.Equal(18 + 5, reader.Offset); // length byte + 4 payload bytes consumed
+        Assert.Equal(18 + 6, reader.Offset); // 16-bit length word + 4 payload bytes consumed
         Assert.Equal((byte)ServerMessageType.Print, reader.Data[reader.Offset]);
     }
 
     [Fact]
     public void VariableLengthMessage_PayloadIsDispatchedBounded()
     {
-        // Reader sits after the index byte: length byte 3 declares three payload
+        // Reader sits after the index byte: 16-bit length 3 declares three payload
         // bytes; the 0xFF bytes behind the message must not leak into the payload.
-        var stream = new List<byte> { 0x04, 0x03, 0xAA, 0xBB, 0xCC, 0xFF, 0xFF, 0xFF };
+        var stream = new List<byte> { 0x04, 0x03, 0x00, 0xAA, 0xBB, 0xCC, 0xFF, 0xFF, 0xFF };
 
         using var conn = new GoldsrcConnection();
         var handler = new TestGameHandler();
@@ -72,7 +72,7 @@ public class UserMessageFramingTests
         var raw = Assert.Single(handler.RawMessages);
         Assert.Equal("SayText", raw.Name);
         Assert.Equal(new byte[] { 0xAA, 0xBB, 0xCC }, raw.Data);
-        Assert.Equal(5, reader.Offset);
+        Assert.Equal(6, reader.Offset);
     }
 
     [Fact]

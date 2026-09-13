@@ -21,12 +21,12 @@ public class NetchanChannelTests
     }
 
     /// <summary>Builds a sequenced packet with a raw message body, Munge2-encrypted as on the wire.</summary>
-    private static byte[] MakeInlinePacket(uint seq, uint ack, byte[] body, bool reliable = false)
+    private static byte[] MakeInlinePacket(uint seq, uint ack, byte[] body, bool reliable = false, uint relAck = 0)
     {
         uint w1 = seq & MessageConstants.SequenceMask;
         if (reliable)
             w1 |= MessageConstants.SequenceFlagReliable;
-        uint w2 = (ack & MessageConstants.SequenceMask) | (ack << 31);
+        uint w2 = (ack & MessageConstants.SequenceMask) | (relAck << 31);
         byte[] packet = new byte[MessageConstants.ConnectedHeadSize + body.Length];
         BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(0), w1);
         BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(4), w2);
@@ -179,12 +179,12 @@ public class NetchanChannelTests
 
     /// <summary>Builds a sequenced packet with a raw PLAINTEXT body (no Munge2), as sent
     /// by plaintext-netchan engine branches (Sven Co-op).</summary>
-    private static byte[] MakePlainInlinePacket(uint seq, uint ack, byte[] body, bool reliable = false)
+    private static byte[] MakePlainInlinePacket(uint seq, uint ack, byte[] body, bool reliable = false, uint relAck = 0)
     {
         uint w1 = seq & MessageConstants.SequenceMask;
         if (reliable)
             w1 |= MessageConstants.SequenceFlagReliable;
-        uint w2 = (ack & MessageConstants.SequenceMask) | (ack << 31);
+        uint w2 = (ack & MessageConstants.SequenceMask) | (relAck << 31);
         byte[] packet = new byte[MessageConstants.ConnectedHeadSize + body.Length];
         BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(0), w1);
         BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(4), w2);
@@ -215,6 +215,42 @@ public class NetchanChannelTests
         BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(4), w2);
         ((byte[])[.. body]).CopyTo(packet, MessageConstants.ConnectedHeadSize);
         return packet;
+    }
+
+    [Fact]
+    public void ReliableRetransmit_RequiresEvidenceOfLoss()
+    {
+        // Engine-exact retransmission (Netchan_Transmit): a pending reliable
+        // payload is resent only once the remote has acknowledged a packet sent
+        // AFTER the one carrying it (incoming_acknowledged > last_reliable_sequence)
+        // while its reliable-ack parity still mismatches ours. Blind timer-based
+        // resends would toggle the server's parity per duplicate and ping-pong
+        // the acknowledgement out of phase.
+        var (channel, sent) = CreateChannel(useEncryption: false);
+
+        channel.SendReliable([0x03, 0x01]); // clc_stringcmd "..." — rides packet seq 1
+        Assert.Single(sent);
+
+        // Server acks only our packet 1 (the one carrying the payload): no
+        // evidence of loss yet, the resulting ack packet must NOT carry the
+        // payload again.
+        channel.ProcessIncoming(MakePlainInlinePacket(seq: 1, ack: 1, body: [(byte)ServerMessageType.Nop]), _ => { });
+        uint w1 = BinaryPrimitives.ReadUInt32LittleEndian(sent[^1].AsSpan(0));
+        Assert.Equal(0u, w1 & MessageConstants.SequenceFlagReliable);
+
+        // Server acks packet 2 but its parity (0) still mismatches our pending
+        // reliable's parity (1): positive evidence of loss → resend.
+        channel.ProcessIncoming(MakePlainInlinePacket(seq: 2, ack: 2, body: [(byte)ServerMessageType.Nop]), _ => { });
+        w1 = BinaryPrimitives.ReadUInt32LittleEndian(sent[^1].AsSpan(0));
+        Assert.NotEqual(0u, w1 & MessageConstants.SequenceFlagReliable);
+        Assert.Equal([0x03, 0x01], sent[^1][MessageConstants.ConnectedHeadSize..(MessageConstants.ConnectedHeadSize + 2)]);
+
+        // Once the server echoes our parity and acknowledges the retransmission
+        // itself, the slot clears and the next packet is a plain ack again.
+        channel.ProcessIncoming(MakePlainInlinePacket(seq: 3, ack: 3, body: [(byte)ServerMessageType.Nop], relAck: 1), _ => { });
+        channel.ProcessIncoming(MakePlainInlinePacket(seq: 4, ack: 4, body: [(byte)ServerMessageType.Nop], relAck: 1), _ => { });
+        w1 = BinaryPrimitives.ReadUInt32LittleEndian(sent[^1].AsSpan(0));
+        Assert.Equal(0u, w1 & MessageConstants.SequenceFlagReliable);
     }
 
     [Fact]

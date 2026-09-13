@@ -230,7 +230,7 @@ public partial class ConnectCommand : ICommand
         connection.OnDataPacket += (conn, raw) =>
         {
             if (Debug)
-                Emit("raw_packet", new { length = raw.Length, hex = Convert.ToHexString(raw.AsSpan(0, Math.Min(raw.Length, 128)).ToArray()) }, console);
+                Emit("raw_packet", new { length = raw.Length, hex = Convert.ToHexString(raw) }, console);
         };
 
         if (gameHandler is HalfLifeMessageHandler hlHandler)

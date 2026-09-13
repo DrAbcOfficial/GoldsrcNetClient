@@ -75,12 +75,14 @@ public abstract class GameMessageHandler : IServerMessageHandler
             }
             else
             {
-                // Variable-length registration (declared 255) carries a length byte
-                // after the index. Unregistered indices use the same framing as a
-                // best effort so the surrounding stream stays in sync.
-                if (name == null)
-                    connection.Logger.LogDebug("[UserMsg] unregistered index 0x{Index:X2}, assuming length-prefixed payload", messageType);
-                payloadLen = reader.Offset < reader.Size ? reader.Data[reader.Offset++] : 0;
+                // Variable-length registration (declared 255) carries a 16-bit
+                // little-endian length word after the index (wire-verified:
+                // ServerName 7A 16 00 "Sven Co-op 5.0 server\0" — 0x0016 = 22).
+                // Unregistered indices use the same framing as a best effort so
+                // the surrounding stream stays in sync.
+                uint lo = reader.Offset < reader.Size ? reader.Data[reader.Offset++] : 0u;
+                uint hi = reader.Offset < reader.Size ? reader.Data[reader.Offset++] : 0u;
+                payloadLen = (int)(lo | (hi << 8));
             }
 
             DispatchUserMessageRange(connection, messageType, name, reader, payloadLen, out var handledVariable);

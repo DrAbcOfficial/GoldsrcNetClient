@@ -10,6 +10,16 @@ namespace GoldsrcNetClient.Core.Network;
 /// </summary>
 public sealed class ConnectionContext
 {
+    /// <summary>
+    /// Delta-compression field tables received from this server via
+    /// <c>svc_deltadescription</c>, keyed by struct name (e.g. "entity_state_t").
+    /// The engine registers every table before sending any delta-compressed
+    /// payload (they are written inside SV_SendServerinfo), so consumers can
+    /// always resolve the live definition instead of the compiled Valve layout —
+    /// required for Sven Co-op whose structures differ from stock GoldSrc.
+    /// </summary>
+    public Dictionary<string, DeltaType> DeltaTables { get; } = new(StringComparer.Ordinal);
+
     /// <summary>Challenge token bytes received from the server.</summary>
     public byte[] Challenge { get; set; } = [];
 
