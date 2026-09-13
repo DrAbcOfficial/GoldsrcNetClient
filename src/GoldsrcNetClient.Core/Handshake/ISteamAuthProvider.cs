@@ -32,3 +32,19 @@ public interface ISteamAuthProvider
     /// <param name="vac2Secure">Whether the server advertised itself as VAC-secured.</param>
     byte[] GetGameAuthBytes(uint appid, ulong serverSteamId, uint serverIp, ushort serverPort, bool vac2Secure) => GetRawAuthBytes();
 }
+
+/// <summary>
+/// Default no-op <see cref="ISteamAuthProvider"/> that reports Steam as unavailable
+/// and provides fake authentication data for servers that do not enforce Steam auth.
+/// </summary>
+public sealed class NoSteamAuthProvider : ISteamAuthProvider
+{
+    /// <inheritdoc/>
+    public bool IsAvailable => false;
+
+    /// <inheritdoc/>
+    public byte GetAuthProtocol() => 3;
+
+    /// <inheritdoc/>
+    public string GetRawAuthData() => "steam";
+}

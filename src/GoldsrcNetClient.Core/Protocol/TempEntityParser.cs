@@ -84,15 +84,11 @@ public static class TempEntityParser
     /// or the type is unknown — in both cases the enclosing packet cannot be
     /// reliably parsed further.
     /// </summary>
-    /// <param name="wideCoords">
-    /// True for Sven Co-op whose READ_COORD was widened to a 32-bit 16.16
-    /// fixed-point value (maps up to ±32768 units); false for Valve GoldSrc's
-    /// 18-bit bit-coordinate.
-    /// </param>
-    public static bool Skip(byte[] data, ref int bitIdx, int size, bool wideCoords, ILogger? logger = null)
+    /// <param name="variant">Engine-branch dialect (selects the coordinate encoding).</param>
+    public static bool Skip(byte[] data, ref int bitIdx, int size, IEngineVariant variant, ILogger? logger = null)
     {
         logger ??= NullLogger.Instance;
-        CoordReader read = wideCoords ? ReadCoordWideInner : ReadCoordPacked;
+        CoordReader read = variant.WideCoordinates ? ReadCoordWideInner : ReadCoordPacked;
         uint type = 0;
         if (!BitReader.ReadBits(data, ref bitIdx, size, ref type, 8))
             return false;
@@ -378,14 +374,9 @@ public static class TempEntityParser
             }
             default:
                 // Unknown types have an indeterminate length; the packet cannot stay in sync.
-                UnknownTypes.Enqueue(type);
-                while (UnknownTypes.Count > 16) UnknownTypes.TryDequeue(out _);
                 return false;
         }
     }
-
-    /// <summary>Recently seen unknown TE types (diagnostics; bounded).</summary>
-    public static readonly System.Collections.Concurrent.ConcurrentQueue<uint> UnknownTypes = new();
 
     private delegate bool CoordReader(byte[] data, ref int bitIdx, int size);
 

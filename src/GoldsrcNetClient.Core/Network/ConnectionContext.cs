@@ -1,3 +1,4 @@
+using GoldsrcNetClient.Core.Delta;
 using GoldsrcNetClient.Core.Protocol;
 
 namespace GoldsrcNetClient.Core.Network;

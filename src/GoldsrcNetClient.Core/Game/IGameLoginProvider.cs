@@ -1,5 +1,6 @@
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
+using GoldsrcNetClient.Core.Protocol;
 
 namespace GoldsrcNetClient.Core.Game;
 
@@ -8,10 +9,12 @@ namespace GoldsrcNetClient.Core.Game;
 /// (Half-Life, Counter-Strike, Sven Co-op, ...).
 /// </summary>
 /// <remarks>
-/// <para>Each game differs in Steam AppId, default userinfo, and the set of user
-/// messages its server sends. Implement this interface (or derive from
-/// <see cref="BaseGameLoginProvider"/>) and register it with
-/// <see cref="GameLoginProviders.Register"/> to support a new game:</para>
+/// <para>This is the extension point for supporting new games: implement the
+/// interface (or derive from <see cref="BaseGameLoginProvider"/>) and register
+/// it with <see cref="GameLoginProviders.Register"/>. The profile bundles
+/// everything the connection needs — Steam AppId, default userinfo, the
+/// engine-branch <see cref="IEngineVariant"/> wire dialect, and the user
+/// message handler — so the protocol layer never branches on game identities:</para>
 ///
 /// <code>
 /// public sealed class MyModLoginProvider : BaseGameLoginProvider
@@ -19,6 +22,7 @@ namespace GoldsrcNetClient.Core.Game;
 ///     public override string Id => "mymod";
 ///     public override string DisplayName => "My Mod";
 ///     public override uint AppId => 123456;
+///     public override IEngineVariant EngineVariant => myBranchVariant;
 ///     public override IServerMessageHandler CreateMessageHandler() => new MyModMessageHandler();
 /// }
 ///
@@ -44,24 +48,11 @@ public interface IGameLoginProvider
     string DefaultUserInfo { get; }
 
     /// <summary>
-    /// Whether netchan packets are Munge2-encrypted with this game's engine branch.
-    /// Standard Valve GoldSrc engine branches (Half-Life, Counter-Strike) call
-    /// COM_Munge2/COM_UnMunge2 unconditionally in the netchan; the Sven Co-op engine
-    /// branch ships the munge code but with zero call sites (verified in hw.dll via
-    /// Ghidra — tables and functions present as dead code), so its netchan traffic is
-    /// plaintext in both directions. Encrypting towards a Sven server yields
-    /// <c>Bad command character in client command</c> kicks; not decrypting a
-    /// Valve-server stream yields garbage payloads.
+    /// The engine-branch wire dialect (netchan encryption, fragment field widths,
+    /// delta/entity bit widths, coordinate encoding, CRC handling) this game's
+    /// servers speak. The connection and netchan consume this abstraction.
     /// </summary>
-    bool UseNetchanEncryption { get; }
-
-    /// <summary>
-    /// Whether netchan fragment headers carry 32-bit startpos/length fields. The Sven
-    /// Co-op engine branch widened these from Valve's 16-bit fields (wire-verified:
-    /// a 1-of-1 fragment announcing its 43-byte BZ2-wrapped serverinfo is parsed as a
-    /// zero-length fragment under the Valve layout). Valve GoldSrc servers use 16 bit.
-    /// </summary>
-    bool UseLongFragmentFields { get; }
+    IEngineVariant EngineVariant { get; }
 
     /// <summary>
     /// Creates the server message handler for this game. Called once per connection;
@@ -70,7 +61,8 @@ public interface IGameLoginProvider
     IServerMessageHandler CreateMessageHandler();
 }
 
-/// <summary>Convenience base for game login providers.</summary>
+/// <summary>Convenience base for game login providers, defaulting to the standard
+/// Valve GoldSrc engine branch and userinfo.</summary>
 public abstract class BaseGameLoginProvider : IGameLoginProvider
 {
     /// <inheritdoc />
@@ -83,14 +75,10 @@ public abstract class BaseGameLoginProvider : IGameLoginProvider
     public abstract uint AppId { get; }
 
     /// <inheritdoc />
-    public virtual string DefaultUserInfo =>
-        "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000\\hltv\\0";
+    public virtual string DefaultUserInfo => GoldsrcEngineSettings.DefaultUserInfoTemplate;
 
     /// <inheritdoc />
-    public virtual bool UseNetchanEncryption => true;
-
-    /// <inheritdoc />
-    public virtual bool UseLongFragmentFields => false;
+    public virtual IEngineVariant EngineVariant => EngineVariants.Valve;
 
     /// <inheritdoc />
     public abstract IServerMessageHandler CreateMessageHandler();
@@ -192,20 +180,14 @@ public sealed class SvenCoopLoginProvider : BaseGameLoginProvider
     /// <inheritdoc />
     public override uint AppId => 225840;
 
-    /// <inheritdoc />
-    public override string DefaultUserInfo =>
-        "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000";
-
     /// <summary>
-    /// The Sven Co-op engine branch does not call COM_Munge2/COM_UnMunge2 anywhere
-    /// (confirmed in the 5.26 dedicated-server hw.dll: the munge functions and tables
-    /// are compiled in as dead code with zero references), so its netchan is plaintext.
+    /// The Sven Co-op engine branch: plaintext netchan (the munge functions are
+    /// compiled into hw.dll as dead code with zero call sites), 32-bit fragment
+    /// fields, 13-bit entity indices, 4-bit delta prefixes, wide coordinates,
+    /// plaintext worldmap/spawn CRCs.
     /// </summary>
     /// <inheritdoc />
-    public override bool UseNetchanEncryption => false;
-
-    /// <inheritdoc />
-    public override bool UseLongFragmentFields => true;
+    public override IEngineVariant EngineVariant => EngineVariants.SvenCoop;
 
     /// <inheritdoc />
     public override IServerMessageHandler CreateMessageHandler() => new SvenCoopMessageHandler();

@@ -6,6 +6,13 @@ namespace GoldsrcNetClient.Core.Protocol;
 /// </summary>
 public class GoldsrcEngineSettings
 {
+    /// <summary>Canonical default userinfo template. Single source shared by
+    /// <see cref="DefaultUserInfo"/> and <see cref="Game.BaseGameLoginProvider.DefaultUserInfo"/>:
+    /// a high <c>rate</c> keeps the server's reliable fragment stream draining fast;
+    /// the server clamps it to <c>sv_maxrate</c> anyway.</summary>
+    public const string DefaultUserInfoTemplate =
+        "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_dlmax\\1024\\cl_updaterate\\60\\rate\\100000\\hltv\\0";
+
     /// <summary>Network protocol version to use. Default 48 (compatible with HL25/GoldSrc).</summary>
     public int ProtocolVersion { get; set; } = 48;
 
@@ -19,11 +26,9 @@ public class GoldsrcEngineSettings
     /// fills up, and the server drops us with <c>Reliable channel overflowed</c>.</summary>
     public int MoveIntervalMs { get; set; } = 10;
 
-    /// <summary>Default UserInfo string template. Uses GoldSrc backslash-delimited key-value format.
-    /// A high <c>rate</c> keeps the server's reliable fragment stream draining fast; the
-    /// server clamps it to <c>sv_maxrate</c> anyway.</summary>
-    public string DefaultUserInfo { get; set; } =
-        "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_dlmax\\1024\\cl_updaterate\\60\\rate\\100000\\hltv\\0";
+    /// <summary>Default UserInfo string template (initialized from <see cref="DefaultUserInfoTemplate"/>).
+    /// Uses GoldSrc backslash-delimited key-value format.</summary>
+    public string DefaultUserInfo { get; set; } = DefaultUserInfoTemplate;
 
     /// <summary>Default values returned when the server queries cvar values via SendCvarValue/SendCvarValue2.</summary>
     public Dictionary<string, string> CvarDefaultValues { get; set; } = new(StringComparer.OrdinalIgnoreCase)

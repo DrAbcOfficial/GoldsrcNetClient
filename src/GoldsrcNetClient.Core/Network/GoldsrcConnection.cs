@@ -2,12 +2,12 @@ using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Netchan;
 using GoldsrcNetClient.Core.Protocol;
+using GoldsrcNetClient.Core.Util;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Channels;
 
@@ -18,8 +18,9 @@ namespace GoldsrcNetClient.Core.Network;
 /// Orchestrates the UDP transport, the connection handshake
 /// (getchallenge → connect → connected), the per-endpoint sequenced channel
 /// (netchan), and connected server-message processing (Munge decryption, delta
-/// compression parsing, resource list decoding). Supports both WON and Steam
-/// authentication protocols.
+/// compression parsing, resource list decoding). Engine-branch wire differences
+/// come from an <see cref="IEngineVariant"/> instead of game-specific code —
+/// the per-mod message handlers plug in through <see cref="IServerMessageHandler"/>.
 /// </summary>
 /// <remarks>
 /// Usage:
@@ -54,8 +55,8 @@ public partial class GoldsrcConnection : IDisposable
     private readonly IServerMessageHandler _messageHandler;
     private readonly HandshakeNegotiator _handshake;
     private readonly Dictionary<byte, MessageParser> _messageParsers;
-    private readonly bool _useNetchanEncryption;
-    private readonly bool _useLongFragmentFields;
+    private readonly IEngineVariant _variant;
+    private readonly Func<ReadOnlyMemory<byte>, IPEndPoint, CancellationToken, Task> _sendPacket;
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private CancellationTokenSource? _keepAliveCts;
 
@@ -71,41 +72,9 @@ public partial class GoldsrcConnection : IDisposable
 
     internal readonly ILogger<GoldsrcConnection> Logger;
 
-    /// <summary>Raises the Windows system timer resolution to 1 ms while any
-    /// connection is alive — the same thing the engine does. Without it
-    /// <c>Task.Delay(10)</c> sleeps 15-60 ms, the keepalive cadence develops
-    /// silence gaps above the server's <c>sv_failuretime</c> (0.05 s), and the
-    /// server stops draining its reliable stream towards us until it drops the
-    /// connection with <c>"Reliable channel overflowed"</c>.</summary>
-    private static int _timerResolutionRefs;
-
-    [LibraryImport("winmm.dll")]
-    private static partial uint timeBeginPeriod(uint period);
-
-    [LibraryImport("winmm.dll")]
-    private static partial uint timeEndPeriod(uint period);
-
-    private static void AcquireTimerResolution()
-    {
-        if (!OperatingSystem.IsWindows())
-            return;
-        lock (typeof(GoldsrcConnection))
-        {
-            if (_timerResolutionRefs++ == 0)
-                timeBeginPeriod(1);
-        }
-    }
-
-    private static void ReleaseTimerResolution()
-    {
-        if (!OperatingSystem.IsWindows())
-            return;
-        lock (typeof(GoldsrcConnection))
-        {
-            if (_timerResolutionRefs > 0 && --_timerResolutionRefs == 0)
-                timeEndPeriod(1);
-        }
-    }
+    /// <summary>The session of the most recent <see cref="ConnectAsync"/> target, if any.</summary>
+    private Session? ActiveSession
+        => _sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session) ? session : null;
 
     /// <summary>Raised when the server disconnects the client, with the server-supplied reason.</summary>
     public event Action<string>? OnServerDisconnect;
@@ -133,12 +102,8 @@ public partial class GoldsrcConnection : IDisposable
     /// </summary>
     public uint SpawnCount
     {
-        get => _sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session) ? session.Context.SpawnCount : 0;
-        set
-        {
-            if (_sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session))
-                session.Context.SpawnCount = value;
-        }
+        get => ActiveSession?.Context.SpawnCount ?? 0;
+        set => ActiveSession?.Context.SpawnCount = value;
     }
 
     /// <summary>Delegate for <see cref="OnServerInfo"/> events.</summary>
@@ -169,10 +134,7 @@ public partial class GoldsrcConnection : IDisposable
     /// server sends a <see cref="ServerMessageType.ResourceRequest"/>.
     /// Returns an empty array if no resource list has been received yet.
     /// </summary>
-    public byte[] ResourceListRawBytes
-    {
-        get => _sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session) ? session.Context.ResourceListRawBytes : [];
-    }
+    public byte[] ResourceListRawBytes => ActiveSession?.Context.ResourceListRawBytes ?? [];
 
     /// <summary>Delegate for <see cref="OnDataPacket"/> events.</summary>
     /// <param name="conn">The connection that received the data.</param>
@@ -184,13 +146,6 @@ public partial class GoldsrcConnection : IDisposable
 
     /// <summary>A task that completes when the connection handshake reaches <see cref="SessionState.Connected"/>.</summary>
     public Task Connected => _connectedTcs.Task;
-
-    /// <summary>
-    /// Button bitmask sent with each usercmd (move) packet.
-    /// Set to <c>1</c> (<c>IN_ATTACK</c>) to enable respawning in Sven Co-op.
-    /// Defaults to <c>0</c> (no buttons pressed).
-    /// </summary>
-    public ushort MoveButtons { get; set; }
 
     /// <summary>
     /// The current userinfo string sent during the connect handshake.
@@ -231,21 +186,19 @@ public partial class GoldsrcConnection : IDisposable
     /// <param name="authProvider">Steam auth provider; defaults to <see cref="NoSteamAuthProvider"/> which sends a fake key.</param>
     /// <param name="messageHandler">Optional server message handler. Called for each message type in connected packets
     /// before built-in processing. Return <c>true</c> to consume the message; <c>false</c> to fall through to the default parser.
-    /// Defaults to <see cref="DefaultServerMessageHandler"/> which always delegates to built-in logic.</param>
+    /// Defaults to <see cref="DefaultServerMessageHandler"/> which always delegates to built-in logic.
+    /// Game/mod profiles build on this (see <see cref="Game.IGameLoginProvider.CreateMessageHandler"/>).</param>
+    /// <param name="engineVariant">Engine-branch wire dialect; defaults to the standard Valve branch.
+    /// Pass the profile's variant when connecting to a different branch
+    /// (e.g. <see cref="EngineVariants.SvenCoop"/>).</param>
     /// <param name="localPort">Local UDP port to bind (0 = OS-assigned).</param>
-    /// <param name="useNetchanEncryption">Whether netchan payloads are Munge2-encrypted.
-    /// Match this to the engine branch of the target server: true for Valve GoldSrc games
-    /// (Half-Life, Counter-Strike), false for Sven Co-op whose netchan is plaintext
-    /// (see <see cref="Game.IGameLoginProvider.UseNetchanEncryption"/>).</param>
-    /// <param name="longFragmentFields">Parse incoming fragment headers with 32-bit
-    /// startpos/length fields (Sven Co-op); false for Valve's 16-bit fields.</param>
-    public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null, IServerMessageHandler? messageHandler = null, int localPort = 0, bool useNetchanEncryption = true, bool longFragmentFields = false)
+    public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null,
+        IServerMessageHandler? messageHandler = null, IEngineVariant? engineVariant = null, int localPort = 0)
     {
         Logger = logger ?? NullLogger<GoldsrcConnection>.Instance;
         _authProvider = authProvider ?? new NoSteamAuthProvider();
         _messageHandler = messageHandler ?? new DefaultServerMessageHandler();
-        _useNetchanEncryption = useNetchanEncryption;
-        _useLongFragmentFields = longFragmentFields;
+        _variant = engineVariant ?? EngineVariants.Valve;
         _socket = new UdpClient(localPort);
         // The signon burst (delta descriptions + resource list + spawn baselines
         // ≈ 150 KB compressed, delivered in fast bursts) plus the per-frame
@@ -254,8 +207,8 @@ public partial class GoldsrcConnection : IDisposable
         // which stalls the reliable-stream acknowledgement and ends in a
         // "Reliable channel overflowed" drop.
         _socket.Client.ReceiveBufferSize = 4 * 1024 * 1024;
-        _handshake = new HandshakeNegotiator(_authProvider, Settings,
-            (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask(), Logger);
+        _sendPacket = (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask();
+        _handshake = new HandshakeNegotiator(_authProvider, Settings, _sendPacket, Logger);
         _messageParsers = BuildMessageParsers();
         _userInfo = new UserInfoString(Settings.DefaultUserInfo);
     }
@@ -322,7 +275,7 @@ public partial class GoldsrcConnection : IDisposable
     /// <param name="ct">Cancellation token to stop the receive loop.</param>
     public async Task ConnectAsync(uint appId, string host, int port = 27015, CancellationToken ct = default)
     {
-        AcquireTimerResolution();
+        TimerResolution.Acquire();
         Logger.LogDebug($"[State] Begin -> resolving {host}:{port}");
         var addresses = await Dns.GetHostAddressesAsync(host, ct);
         var ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork) ?? addresses[0];
@@ -332,9 +285,7 @@ public partial class GoldsrcConnection : IDisposable
 
         var session = new Session(ep)
         {
-            Channel = new NetchanChannel(ep,
-                (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask(), Logger,
-                _useNetchanEncryption, _useLongFragmentFields)
+            Channel = new NetchanChannel(ep, _sendPacket, Logger, _variant)
         };
         _sessions[ep] = session;
 
@@ -430,7 +381,7 @@ public partial class GoldsrcConnection : IDisposable
                 // the classification path — dropping them stalls the netchan
                 // acknowledgement and ends in "Reliable channel overflowed".
                 Logger.LogDebug("[Fragment] split packet len={Len} head={Hex}",
-                    len, Convert.ToHexString(data.AsSpan(0, Math.Min(len, 24))));
+                    len, data.AsSpan().ToHexPreview(24));
                 var whole = _splitReassembler.TryAdd(data);
                 if (whole != null)
                 {
@@ -452,19 +403,18 @@ public partial class GoldsrcConnection : IDisposable
                 Logger.LogTrace("[Loop] waiting for packet...");
                 var result = await _socket.ReceiveAsync(ct);
                 var data = result.Buffer;
-                var len = data.Length;
                 var from = result.RemoteEndPoint;
 
-                Logger.LogTrace($"[Loop] received {len} bytes from {from}");
+                Logger.LogTrace($"[Loop] received {data.Length} bytes from {from}");
                 if (!ep.Equals(from)) continue;
-                if (len < 4) continue;
+                if (data.Length < 4) continue;
 
                 await HandleDatagramAsync(data.ToArray());
             }
         }
         finally
         {
-            ReleaseTimerResolution();
+            TimerResolution.Release();
             inbound.Writer.TryComplete();
             try { await consumer.WaitAsync(TimeSpan.FromSeconds(2)); } catch { /* flush best-effort */ }
             messages.Writer.TryComplete();
@@ -482,7 +432,7 @@ public partial class GoldsrcConnection : IDisposable
 
     private Task SendReliableAsync(byte[] payload, CancellationToken ct)
     {
-        if (_sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session))
+        if (ActiveSession is { } session)
         {
             session.Channel.SendReliable(payload);
             return Task.CompletedTask;
@@ -510,8 +460,8 @@ public partial class GoldsrcConnection : IDisposable
             // from within that window gets its outgoing stream throttled, the
             // reliable queue then fills faster than it drains, and the server
             // drops us with "Reliable channel overflowed". The 1 ms system timer
-            // resolution (AcquireTimerResolution) is what makes the short
-            // interval actually achievable on Windows.
+            // resolution (TimerResolution) is what makes the short interval
+            // actually achievable on Windows.
             long nextSendMs = Environment.TickCount64;
             while (!token.IsCancellationRequested)
             {
@@ -523,7 +473,7 @@ public partial class GoldsrcConnection : IDisposable
                     else if (nextSendMs + Settings.MoveIntervalMs < Environment.TickCount64)
                         nextSendMs = Environment.TickCount64; // overslept: realign, don't burst
                     nextSendMs += Settings.MoveIntervalMs;
-                    if (_sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session))
+                    if (ActiveSession is { } session)
                         session.Channel.SendKeepAlive();
                 }
                 catch (OperationCanceledException) { break; }

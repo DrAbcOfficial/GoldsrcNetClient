@@ -26,25 +26,15 @@ public sealed class UserMessageRegistry
     /// </summary>
     public unsafe void Register(MessageReader reader)
     {
-        int msgSize;
-        unsafe { msgSize = sizeof(GoldsrcNetClient.Core.Protocol.NewUserMsgData); }
-        if (reader.Remaining < msgSize) return;
+        if (!reader.ReadStruct<Protocol.NewUserMsgData>(out var msg))
+            return;
 
-        unsafe
-        {
-            fixed (byte* p = &reader.Data[reader.Offset])
-            {
-                var msg = *(GoldsrcNetClient.Core.Protocol.NewUserMsgData*)p;
-                reader.Offset += msgSize;
+        int len = 0;
+        while (len < 16 && msg.NameData[len] != 0) len++;
+        var name = Encoding.UTF8.GetString(msg.NameData, len);
 
-                int len = 0;
-                while (len < 16 && msg.NameData[len] != 0) len++;
-                var name = Encoding.UTF8.GetString(msg.NameData, len);
-
-                if (name.Length > 0)
-                    _messages[msg.Index] = new UserMessageRegistration(name, msg.Size);
-            }
-        }
+        if (name.Length > 0)
+            _messages[msg.Index] = new UserMessageRegistration(name, msg.Size);
     }
 
     /// <summary>

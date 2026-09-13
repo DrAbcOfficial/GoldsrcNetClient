@@ -3,8 +3,6 @@ namespace GoldsrcNetClient.Core.Protocol;
 /// <summary>Connection session state machine steps.</summary>
 public enum SessionState
 {
-    /// <summary>Initial state before DNS resolution.</summary>
-    Begin,
     /// <summary>Waiting for the server's challenge response after sending getchallenge.</summary>
     GetChallenge,
     /// <summary>Connect packet sent; waiting for server approval (B-message).</summary>
@@ -169,29 +167,6 @@ public enum ClientCommandType : byte
     CvarValue = 0x0A,
     /// <summary>Cvar value version 2 response.</summary>
     CvarValue2 = 0x0B
-}
-
-/// <summary>Bit flags describing the type and encoding of a delta-compressed field.</summary>
-public enum DeltaFieldFlag : uint
-{
-    /// <summary>Single-byte unsigned integer.</summary>
-    Byte = 1u << 0,
-    /// <summary>Two-byte unsigned integer.</summary>
-    Short = 1u << 1,
-    /// <summary>Floating-point value.</summary>
-    Float = 1u << 2,
-    /// <summary>Integer value (4 bytes).</summary>
-    Integer = 1u << 3,
-    /// <summary>Angle (special compression).</summary>
-    Angle = 1u << 4,
-    /// <summary>Time window with 8-bit precision.</summary>
-    TimeWindow8 = 1u << 5,
-    /// <summary>Time window with larger precision.</summary>
-    TimeWindowBig = 1u << 6,
-    /// <summary>Null-terminated string field.</summary>
-    StringField = 1u << 7,
-    /// <summary>Value is signed (OR'd with the type flag).</summary>
-    Signed = 1u << 31
 }
 
 /// <summary>Entity type flags used in spawn baseline packets.</summary>

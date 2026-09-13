@@ -6,6 +6,7 @@ using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
+using GoldsrcNetClient.Core.Util;
 using GoldsrcNetClient.SteamProvider;
 using Microsoft.Extensions.Logging;
 using QRCoder;
@@ -134,7 +135,7 @@ public partial class ConnectCommand : ICommand
             gmh.OnRawUserMessage += raw =>
             {
                 if (Debug)
-                    console.Error.WriteLine($"[UserMsg] {raw.Name} ({raw.Data.Length} bytes) {Convert.ToHexString(raw.Data.AsSpan(0, Math.Min(raw.Data.Length, 24)).ToArray())}");
+                    console.Error.WriteLine($"[UserMsg] {raw.Name} ({raw.Data.Length} bytes) {raw.Data.AsSpan().ToHexPreview(24)}");
             };
         }
 
@@ -148,7 +149,7 @@ public partial class ConnectCommand : ICommand
 
         while (!exitCts.IsCancellationRequested)
         {
-            await RunSessionAsync(console, logger, gameHandler, authProvider, loginAppId, profile.UseNetchanEncryption, profile.UseLongFragmentFields, exitCts);
+            await RunSessionAsync(console, logger, gameHandler, authProvider, loginAppId, profile, exitCts);
 
             if (ReconnectDelaySeconds <= 0 || exitCts.IsCancellationRequested)
                 break;
@@ -176,16 +177,19 @@ public partial class ConnectCommand : ICommand
         IServerMessageHandler gameHandler,
         ISteamAuthProvider? authProvider,
         uint loginAppId,
-        bool useNetchanEncryption,
-        bool longFragmentFields,
+        IGameLoginProvider profile,
         CancellationTokenSource exitCts)
     {
         var userCts = new CancellationTokenSource();
         var cliHandler = new CliServerMessageHandler(console, Debug);
         if (gameHandler is GameMessageHandler chain)
+        {
+            chain.Reset(); // fresh user-message registry per session (map changes reconnect)
             chain.Next = cliHandler;
+        }
 
-        using var connection = new GoldsrcConnection(logger, authProvider, gameHandler, useNetchanEncryption: useNetchanEncryption, longFragmentFields: longFragmentFields);
+        using var connection = new GoldsrcConnection(logger, authProvider, gameHandler, profile.EngineVariant);
+        connection.UserInfo = profile.DefaultUserInfo;
 
         if (!string.IsNullOrEmpty(PlayerName))
             connection.SetUserInfo("name", PlayerName);
@@ -209,14 +213,13 @@ public partial class ConnectCommand : ICommand
         {
             unsafe
             {
-                var md5Bytes = new ReadOnlySpan<byte>(info.Md5ClientDll, 16);
                 console.Output.WriteLine("─────────────────────────────────────");
                 console.Output.WriteLine($"  Protocol:      {info.ProtocolVersion}");
                 console.Output.WriteLine($"  Max Clients:   {info.MaxClients}");
                 console.Output.WriteLine($"  Player Slot:   {info.PlayerNumber}");
                 console.Output.WriteLine($"  Spawn Count:   {info.SpawnCount}");
                 console.Output.WriteLine($"  Worldmap CRC:  0x{info.Munge3WorldmapCrc:X8} (encrypted)");
-                console.Output.WriteLine($"  ClientDLL MD5: {Convert.ToHexString(md5Bytes)}");
+                console.Output.WriteLine($"  ClientDLL MD5: {new ReadOnlySpan<byte>(info.Md5ClientDll, 16).ToHexPreview(16)}");
                 console.Output.WriteLine("─────────────────────────────────────");
             }
         };
@@ -230,7 +233,7 @@ public partial class ConnectCommand : ICommand
         connection.OnDataPacket += (conn, raw) =>
         {
             if (Debug)
-                Emit("raw_packet", new { length = raw.Length, hex = Convert.ToHexString(raw) }, console);
+                Emit("raw_packet", new { length = raw.Length, hex = raw.AsSpan().ToHexPreview(raw.Length) }, console);
         };
 
         if (gameHandler is HalfLifeMessageHandler hlHandler)

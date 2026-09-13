@@ -32,20 +32,6 @@ public class BitReaderTests
 public class BitReaderExtendedTests
 {
     [Fact]
-    public void ReadBits_DestinationByteArray()
-    {
-        byte[] source = [0b10101100, 0b11110000];
-        byte[] dest = new byte[4];
-        int srcIdx = 0, dstIdx = 0;
-
-        bool ok = BitReader.ReadBits(source, ref srcIdx, source.Length, dest, ref dstIdx, 16);
-        Assert.True(ok);
-        Assert.Equal(0b10101100, dest[0]);
-        Assert.Equal(0b11110000, dest[1]);
-        Assert.Equal(16, dstIdx);
-    }
-
-    [Fact]
     public void ReadBits_Overflow_ReturnsFalse()
     {
         byte[] source = [0xFF];
@@ -224,18 +210,6 @@ public class BitWriterTests
         BitWriter.WriteBits(0xABCDu, 16, dest, ref bitIdx, dest.Length);
         Assert.Equal(0xCD, dest[0]);
         Assert.Equal(0xAB, dest[1]);
-    }
-
-    [Fact]
-    public void WriteBits_ByteArray_Simple()
-    {
-        byte[] source = [0x55, 0xAA];
-        byte[] dest = new byte[4];
-        int bitIdx = 0;
-
-        BitWriter.WriteBits(source, 16, dest, ref bitIdx, dest.Length);
-        Assert.Equal(0x55, dest[0]);
-        Assert.Equal(0xAA, dest[1]);
     }
 
     [Fact]

@@ -33,56 +33,71 @@ src/
 
 ## Core Architecture
 
-Code is organized by responsibility into subfolders:
+Layering (dependencies point one way): `Protocol` ← `Messages`/`Netchan`/`Delta` ←
+`Network` ← `Game`; composition roots (Cli, Tui) resolve profiles and wire everything.
 
 ```
 Core/
-  GoldsrcConnection.cs        # orchestrator: UDP socket, receive loop, events, send API
-  Handshake/                  # connection establishment
-    HandshakeNegotiator.cs    #   challenge parse, connect packet build, approval → "new"
-    ISteamAuthProvider.cs     #   auth ticket abstraction (+ NoSteamAuthProvider default)
+  Network/                          # the connection orchestrator (one class, partial files)
+    GoldsrcConnection.cs            #   UDP socket, receive loop, keepalive, public send API, events
+    GoldsrcConnection.Dispatch.cs   #   message loop + table-driven svc dispatch + simple parsers
+    GoldsrcConnection.Signon.cs     #   serverinfo → sendres → spawn <count> <crc> → sendents flow
+    GoldsrcConnection.Entities.cs   #   bitstream parsers: delta descriptions, baselines, clientdata, events, sounds
+    GoldsrcConnection.Resources.cs  #   svc_resourcelist bit parsing (+ echo-back payload)
+    ConnectionContext.cs            #   per-session data (challenge, spawn count, CRC, resources)
+    SplitPacketReassembler.cs       #   UDP-level split (NET_GetLong) reassembly
+    TimerResolution.cs              #   winmm timeBeginPeriod(1) ref-counted helper
+  Handshake/                        # connection establishment
+    HandshakeNegotiator.cs          #   challenge parse, connect packet build, approval → "new"
+    ISteamAuthProvider.cs           #   auth ticket abstraction (+ NoSteamAuthProvider default)
   Netchan/
-    NetchanChannel.cs         # sequenced channel: flags, ack/retransmit, Munge2, BZ2
-    FragmentStream.cs         # per-stream fragment reassembly
+    NetchanChannel.cs               # sequenced channel: flags, ack/evidence-based retransmit, BZ2
+    FragmentStream.cs               # per-stream fragment reassembly
   Messages/
-    MessageReader.cs          #   byte-level reads
-    MessageWriter.cs          #   byte-level writes
-    MessageConstants.cs       #   header markers, sequence flags/mask
-    IServerMessageHandler.cs  #   DI hook (+ DefaultServerMessageHandler no-op)
+    MessageReader.cs                #   byte-level reads (+ ReadStruct<T> overlay helper)
+    MessageWriter.cs                #   byte-level writes
+    MessageConstants.cs             #   header markers, sequence flags/mask
+    IServerMessageHandler.cs        #   DI hook (+ DefaultServerMessageHandler no-op)
   Delta/
-    DeltaDefinitions.cs       #   predefined delta types (incl. meta delta_description_t)
-    DeltaReader.cs            #   delta record skipping on a bitstream
-  Protocol/                   # wire-format vocabulary
-    Enums.cs / Structs.cs / GoldsrcEngineSettings.cs / UserMessageType.cs
-    UserInfoString.cs         #   \key\value userinfo parse/build
-    UserCmd.cs                #   clc_move payload encoder
-  Game/                       # per-game profiles + user-message handlers
-    IGameLoginProvider.cs, GameMessageHandler.cs,
-    HalfLifeMessageHandler.cs, CounterStrikeMessageHandler.cs, SvenCoopMessageHandler.cs,
+    DeltaTypes.cs                   #   DeltaField/DeltaType/DeltaFieldDescription vocabulary
+    DeltaDefinitions.cs             #   predefined delta types (fallbacks for svc_deltadescription)
+    DeltaReader.cs                  #   delta record skipping + meta field description reader
+  Protocol/                         # wire-format vocabulary (knows no game identities)
+    EngineVariant.cs                #   IEngineVariant dialect abstraction + Valve/SvenCoop instances
+    Enums.cs / Structs.cs / GoldsrcEngineSettings.cs
+    UserInfoString.cs               #   \key\value userinfo parse/build
+    UserCmd.cs                      #   clc_move payload encoder
+    TempEntityParser.cs             #   svc_tempentity bitstream skipper
+  Game/                             # per-game profiles + user-message handlers
+    IGameLoginProvider.cs           #   profile interface + registry + built-in providers
+    GameMessageHandler.cs, HalfLifeMessageHandler.cs,
+    CounterStrikeMessageHandler.cs, SvenCoopMessageHandler.cs,
     GameEventData.cs, UserMessageRegistry.cs
-  Munge/Munge.cs              # Munge1/2/3 XOR ciphers
-  Util/BitReader.cs, BitWriter.cs
+  Munge/Munge.cs                    # Munge1/2/3 XOR ciphers (one shared transform core)
+  Query/A2SQuerier.cs               # A2S_INFO server query (GoldSrc + Source replies)
+  Util/BitReader.cs, BitWriter.cs, ByteSpanExtensions.cs
 ```
 
-- Namespace convention: `GoldsrcNetClient.Core.{Folder}`; `GoldsrcConnection` and
-  `ConnectionContext` stay in `.Network`.
+- Namespace convention: `GoldsrcNetClient.Core.{Folder}`.
 - File-scoped namespaces, `ImplicitUsings`, `Nullable=enable` on all projects.
-  Style: C# 14 (primary constructors, collection expressions, `System.Threading.Lock`).
+  Style: C# 14 (primary constructors, collection expressions, `System.Threading.Lock`,
+  `extension` members — see `ByteSpanExtensions`, null-conditional assignment).
 
 ### GoldsrcConnection (Core/Network/)
 
-The connection is a thin orchestrator; each responsibility lives in its own class:
+The connection is a thin orchestrator; each responsibility lives in its own class or
+partial file:
 
 - `HandshakeNegotiator` — the whole getchallenge → connect → approval state machine.
 - `NetchanChannel` (one per server endpoint) — owns sequencing/reliability state AND
   behavior (the engine's `netchan_t`): duplicate suppression, reliable-message ack +
-  500 ms throttled retransmission, fragment reassembly, unconditional Munge2
-  encrypt/decrypt, svc_nop padding, ack-per-packet cadence.
+  evidence-based retransmission, fragment reassembly, unconditional Munge2
+  encrypt/decrypt (per variant), svc_nop padding, ack-per-packet cadence.
   - Reliable ack bit semantics: the server toggles its counter once per NEW
     reliable message; our ack bit mirrors the toggle per received reliable packet.
-    Retransmissions are throttled (500 ms) and a parity re-sync heuristic repairs
-    phase drift.
-- `GoldsrcConnection.Messages.cs` — table-driven dispatch
+    Retransmission fires only on evidence of loss (later packet acked, parity still
+    mismatched), matching the engine's `Netchan_Transmit`.
+- `GoldsrcConnection.Dispatch.cs` — table-driven dispatch
   (`Dictionary<byte, MessageParser>`): each svc message has one parser entry;
   `false` return discards the rest of the packet (buffer overflow).
 - `GoldsrcConnection.Resources.cs` — svc_resourcelist bit parsing; the raw payload
@@ -90,6 +105,23 @@ The connection is a thin orchestrator; each responsibility lives in its own clas
 - Per-message observation goes through events (`OnConsolePrint`, `OnCenterPrint`,
   `OnServerInfo`, `OnServerDisconnect`, ...). Consumers should subscribe to events
   instead of intercepting built-in-handled messages in an `IServerMessageHandler`.
+
+### Engine variants & game profiles (the extension seam)
+
+- `Protocol/IEngineVariant` abstracts every engine-branch wire difference: netchan
+  Munge2 on/off, fragment field widths, delta byte-count prefix (3/4 bits), entity
+  index bits (11/13), resource/consistency index bits, coordinate encoding, and
+  which CRCs travel plaintext. The protocol layer consumes the abstraction only —
+  it never branches on game names.
+- Built-in dialects: `EngineVariants.Valve` and `EngineVariants.SvenCoop`. New
+  branches: `new EngineVariant { ... }` overrides.
+- `Game/IGameLoginProvider` is the per-mod profile: `Id`, `DisplayName`, `AppId`,
+  `DefaultUserInfo`, `EngineVariant`, and a `CreateMessageHandler()` factory.
+  `GameLoginProviders.Register/Resolve/GetByAppId` is the registry; the CLI's
+  `--game` / `--appid` options resolve through it, and Cli/Tui pass
+  `profile.EngineVariant` into the connection. Supporting a new mod = registering a
+  provider — no protocol changes. The Steam login path (`ISteamAuthProvider`) is
+  game-agnostic and takes the profile's AppId.
 
 ### Handshake / auth
 
@@ -103,25 +135,19 @@ resources, SteamID...). All netchan/sequencing state lives in `NetchanChannel`.
 
 ### Encoding details
 
-- Struct marshalling: `fixed` pointers + `StructLayout(LayoutKind.Sequential, Pack=1)`.
-  Core has `AllowUnsafeBlocks=true`.
+- Struct marshalling: `MessageReader.ReadStruct<T>()` overlays blittable
+  `StructLayout(LayoutKind.Sequential, Pack=1)` structs on the wire bytes. Core has
+  `AllowUnsafeBlocks=true`.
 - Encryption: Munge2 (connected packets, key = seq & 0xFF, applied to the whole body
   including svc_nop padding), Munge3 (worldmap CRC, 8-bit key `(-1 - playernum) & 0xFF`;
-  the spawn echo re-munges with `(-1 - spawnCount) & 0xFF`).
-- Delta compression: predefined delta types in `Delta/DeltaDefinitions.cs`
-  (including the `delta_description_t` meta type used by svc_deltadescription).
-  svc_deltadescription fields are themselves delta-encoded against the meta type.
+  the spawn echo re-munges with `(-1 - spawnCount) & 0xFF`). Valve branches only —
+  variants with plaintext CRCs skip both passes.
+- Delta compression: predefined delta types in `Delta/DeltaDefinitions.cs` are the
+  fallbacks; the live tables received via svc_deltadescription (stored in
+  `ConnectionContext.DeltaTables`) always win, which is what makes Sven Co-op's
+  divergent structures work without protocol changes.
 - Bit readers (`BitReader`) use ABSOLUTE bit indexes into the buffer — handlers must
   seed `bitIdx = reader.Offset * 8` and convert back with `reader.Offset = (bitIdx + 7) / 8`.
-
-## Game Profiles
-
-`Core/Game/IGameLoginProvider.cs` — registry of per-game login profiles
-(`GameLoginProviders.Register/Resolve`). Built-ins: hl (70), cstrike (10),
-czero (80), svencoop (225840). Each profile supplies AppId, default userinfo and a
-message-handler factory; the CLI's `--game` / `--appid` options resolve through it.
-Add new GoldSrc-branch games by registering an `IGameLoginProvider` — the Steam
-login path (`ISteamAuthProvider`) is game-agnostic and takes the profile's AppId.
 
 ## Commands
 

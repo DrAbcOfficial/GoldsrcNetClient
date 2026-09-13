@@ -1,11 +1,12 @@
 using GoldsrcNetClient.Core.Handshake;
+using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.SteamProvider;
 
 namespace GoldsrcNetClient.Tui;
 
 public sealed class AppData
 {
-    public string UserInfo { get; set; } = "\\name\\GoldsrcNetClient\\protocol\\48\\cl_lc\\1\\cl_lw\\1\\cl_updaterate\\60\\rate\\20000\\hltv\\0";
+    public string UserInfo { get; set; } = GoldsrcEngineSettings.DefaultUserInfoTemplate;
     public LoginMethod LoginMethod { get; set; } = LoginMethod.NoSteam;
 
     /// <summary>Steam API (steam_api.dll) provider. Initialized on demand; may be null or unavailable.</summary>

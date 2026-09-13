@@ -81,6 +81,8 @@ public class HalfLifeMessageHandler : GameMessageHandler
     public event Action<ConcussEvent>? Concuss;
     /// <summary>Raised when HUD color changes (Opposing Force).</summary>
     public event Action<HudColorEvent>? HudColor;
+    /// <summary>Raised when fog settings change (Counter-Strike, Sven Co-op).</summary>
+    public event Action<FogEvent>? Fog;
 
     #endregion
 
@@ -189,6 +191,7 @@ public class HalfLifeMessageHandler : GameMessageHandler
             case "ResetHUD": ParseResetHUD(reader); return true;
             case "Concuss": ParseConcuss(reader); return true;
             case "HudColor": ParseHudColor(reader); return true;
+            case "Fog": ParseFog(reader); return true;
             default: return false;
         }
     }
@@ -382,5 +385,13 @@ public class HalfLifeMessageHandler : GameMessageHandler
     {
         var ev = new HudColorEvent(r.ReadByte(), r.ReadByte(), r.ReadByte());
         OnHudColor(ev);
+    }
+
+    /// <summary>Fog: byte R, G, B, Density (Counter-Strike and Sven Co-op send this;
+    /// stock Half-Life servers never do, so the case is inert there).</summary>
+    protected virtual void ParseFog(MessageReader r)
+    {
+        var ev = new FogEvent(r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte());
+        Fog?.Invoke(ev);
     }
 }

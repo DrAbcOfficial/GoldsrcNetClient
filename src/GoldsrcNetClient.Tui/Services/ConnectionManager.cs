@@ -1,4 +1,5 @@
 using GoldsrcNetClient.Core.Game;
+using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
@@ -22,8 +23,7 @@ public enum ConnectionState
 public sealed class ConnectionManager : IDisposable
 {
     private GoldsrcConnection? _connection;
-    private HalfLifeMessageHandler? _gameHandler;
-    private CancellationTokenSource? _cts;
+    private HalfLifeMessageHandler? _gameHandler;    private CancellationTokenSource? _cts;
     private ISteamAuthProvider? _authProvider;
     private Task? _connectTask;
     private volatile ConnectionState _state = ConnectionState.Disconnected;
@@ -54,29 +54,29 @@ public sealed class ConnectionManager : IDisposable
         _cts = new CancellationTokenSource();
         SetState(ConnectionState.Connecting);
 
-        _gameHandler = config.AppId switch
-        {
-            10 => new CounterStrikeMessageHandler(),
-            225840 => new SvenCoopMessageHandler(),
-            _ => new HalfLifeMessageHandler(),
-        };
+        // The game profile drives message handling, the engine-variant wire
+        // dialect, and the AppId used for login — the per-game extension point.
+        IGameLoginProvider profile = GameLoginProviders.GetByAppId(config.AppId) ?? GameLoginProviders.Resolve(null, config.AppId);
+        IServerMessageHandler gameHandler = profile.CreateMessageHandler();
+        _gameHandler = gameHandler as HalfLifeMessageHandler;
 
-        _gameHandler.SayText += ev => Emit($"[Say] Player #{ev.SenderId}: {ev.Message}");
-        _gameHandler.TextMsg += ev => Emit($"[TextMsg] {ev.Message}");
-        _gameHandler.HudText += ev => Emit($"[HudText] {ev.TextCode}");
-
-        if (_gameHandler is CounterStrikeMessageHandler cs)
+        if (_gameHandler is { } hlHandler)
         {
-            cs.HudTextArgs += ev => Emit($"[HudTextArgs] {ev.TextCode}: {string.Join(", ", ev.Args)}");
-            cs.HudTextPro += ev => Emit($"[HudTextPro] {ev.TextCode}");
+            hlHandler.SayText += ev => Emit($"[Say] Player #{ev.SenderId}: {ev.Message}");
+            hlHandler.TextMsg += ev => Emit($"[TextMsg] {ev.Message}");
+            hlHandler.HudText += ev => Emit($"[HudText] {ev.TextCode}");
+
+            if (hlHandler is CounterStrikeMessageHandler cs)
+            {
+                cs.HudTextArgs += ev => Emit($"[HudTextArgs] {ev.TextCode}: {string.Join(", ", ev.Args)}");
+                cs.HudTextPro += ev => Emit($"[HudTextPro] {ev.TextCode}");
+            }
         }
 
         var logger = new GlobalLogger<GoldsrcConnection>();
         var resolvedProvider = _authProvider ?? new NoSteamAuthProvider();
         Emit($"Auth: {resolvedProvider.GetType().Name} (IsAvailable={resolvedProvider.IsAvailable})");
-        bool useNetchanEncryption = GameLoginProviders.GetByAppId(config.AppId)?.UseNetchanEncryption ?? true;
-        bool longFragmentFields = GameLoginProviders.GetByAppId(config.AppId)?.UseLongFragmentFields ?? false;
-        _connection = new GoldsrcConnection(logger, resolvedProvider, _gameHandler, useNetchanEncryption: useNetchanEncryption, longFragmentFields: longFragmentFields);
+        _connection = new GoldsrcConnection(logger, resolvedProvider, gameHandler, profile.EngineVariant);
         _connection.UserInfo = userInfo;
 
         // Console output, center prints, and server-initiated disconnects are handled

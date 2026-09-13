@@ -6,50 +6,6 @@ namespace GoldsrcNetClient.Core.Util;
 /// </summary>
 public static class BitReader
 {
-    /// <summary>Reads bits from a source buffer into a destination buffer.</summary>
-    /// <param name="source">Source byte array to read bits from.</param>
-    /// <param name="sourceBitIndex">Current bit position in the source. Advanced after reading.</param>
-    /// <param name="sourceSize">Total size of the source buffer in bytes.</param>
-    /// <param name="destination">Destination byte array to write bits into.</param>
-    /// <param name="destBitIndex">Current bit position in the destination. Advanced after writing.</param>
-    /// <param name="bitCount">Number of bits to read.</param>
-    /// <returns>True if enough bits were available; false on underflow.</returns>
-    public static bool ReadBits(byte[] source, ref int sourceBitIndex, int sourceSize,
-        byte[] destination, ref int destBitIndex, int bitCount)
-    {
-        if (sourceSize * 8 - sourceBitIndex < bitCount)
-            return false;
-
-        while (bitCount > 0)
-        {
-            int m = sourceBitIndex % 8;
-            int l = 8 - m;
-            if (l > bitCount) l = bitCount;
-            bitCount -= l;
-
-            byte n = source[sourceBitIndex / 8];
-            sourceBitIndex += l;
-
-            n = (byte)(n >> m);
-            n &= (byte)((1 << l) - 1);
-
-            while (l > 0)
-            {
-                int dm = destBitIndex % 8;
-                int dl = 8 - dm;
-                if (dl > l) dl = l;
-
-                destination[destBitIndex / 8] |= (byte)(n << dm);
-
-                l -= dl;
-                n = (byte)(n >> dl);
-                destBitIndex += dl;
-            }
-        }
-
-        return true;
-    }
-
     /// <summary>Reads the specified number of bits into an unsigned 32-bit integer.</summary>
     /// <param name="source">Source byte array.</param>
     /// <param name="sourceBitIndex">Current bit position. Advanced after reading.</param>

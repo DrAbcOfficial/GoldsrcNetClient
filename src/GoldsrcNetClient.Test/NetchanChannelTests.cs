@@ -13,10 +13,11 @@ public class NetchanChannelTests
     private static (NetchanChannel Channel, List<byte[]> Sent) CreateChannel(bool useEncryption = true, bool longFragmentFields = false)
     {
         List<byte[]> sent = [];
+        var variant = new EngineVariant { NetchanEncryption = useEncryption, LongFragmentFields = longFragmentFields };
         var channel = new NetchanChannel(
             new IPEndPoint(IPAddress.Loopback, 27015),
             (packet, _, _) => { sent.Add((byte[])packet.ToArray().Clone()); return Task.FromResult(0); },
-            useEncryption: useEncryption, longFragmentFields: longFragmentFields);
+            variant: variant);
         return (channel, sent);
     }
 

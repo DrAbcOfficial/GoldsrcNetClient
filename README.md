@@ -33,15 +33,18 @@ and death notices are printed live.
 
 ```
 Core/
-  GoldsrcConnection.cs        orchestrator: UDP socket, receive loop, events, send API
-  Handshake/                  connection establishment (challenge, connect packet, auth ticket interface)
-  Netchan/                    sequenced channel: reliability, retransmission, fragments, Munge2
-  Messages/                   message reader/writer, constants, IServerMessageHandler hook
-  Delta/                      delta-compression definitions and bitstream reader
-  Protocol/                   enums, structs, settings, UserInfoString, UserCmd encoder
-  Game/                       per-game login profiles and user-message handlers
-  Munge/                      Munge1/2/3 ciphers
-  Util/                       bit-level reader/writer
+  Network/       GoldsrcConnection (orchestrator, split by responsibility into partials):
+                 socket/receive loop, svc dispatch table, signon flow, entity parsers,
+                 resourcelist; SplitPacketReassembler, TimerResolution
+  Handshake/     connection establishment (challenge, connect packet, auth ticket interface)
+  Netchan/       sequenced channel: reliability, evidence-based retransmission, fragments, Munge2
+  Messages/      message reader/writer, constants, IServerMessageHandler hook
+  Delta/         delta-compression definitions, bitstream reader, delta type vocabulary
+  Protocol/      enums, wire structs, settings, EngineVariant dialects, UserInfoString, UserCmd
+  Game/          per-game login profiles and user-message handlers
+  Munge/         Munge1/2/3 ciphers
+  Query/         A2S_INFO server query
+  Util/          bit-level reader/writer, span helpers
 ```
 
 ## Features
@@ -50,8 +53,9 @@ Core/
   (`ISteamUser::InitiateGameConnection` blob, server SteamID + VAC flag parsed from
   the challenge response)
 - Sequenced channel (netchan): Munge2 encryption both ways, duplicate/out-of-order
-  suppression, reliable-message acknowledgement and retransmission, two-stream
-  fragment reassembly, BZ2 decompression, keepalive/ack cadence, sub-16-byte
+  suppression, reliable-message acknowledgement with engine-exact evidence-based
+  retransmission, two-stream fragment reassembly, UDP split-packet reassembly,
+  BZ2 decompression, keepalive/ack cadence with 1 ms timer resolution, sub-16-byte
   packet padding
 - Full signon flow: serverinfo, delta descriptions (meta-delta field encoding),
   movevars, user-message registration, resourcelist (bit-packed parsing),
@@ -61,8 +65,38 @@ Core/
 - Auto-reconnect (`--reconnect <seconds>`) — with the SteamAPI pipeline reconnects
   are seamless (no re-login)
 - Per-game login profiles (`IGameLoginProvider` registry): Half-Life, Counter-Strike,
-  Condition Zero, Sven Co-op — each supplies AppId, default userinfo and a message
-  handler; register custom providers for other GoldSrc-branch games
+  Condition Zero, Sven Co-op — each supplies AppId, default userinfo, an
+  `IEngineVariant` wire dialect and a message handler; register custom providers for
+  other GoldSrc-branch games without touching the protocol code
+
+## Engine variants and mod support
+
+Every engine-branch wire difference (netchan encryption, fragment field widths,
+delta/entity/resource bit widths, coordinate encoding, plaintext vs munged CRCs) is
+captured in the `IEngineVariant` abstraction (`Protocol/EngineVariant.cs`). The
+protocol machinery consumes the abstraction; built-in dialects are
+`EngineVariants.Valve` and `EngineVariants.SvenCoop`.
+
+Supporting a new mod or engine branch needs no protocol changes:
+
+```csharp
+public sealed class MyModLoginProvider : BaseGameLoginProvider
+{
+    public override string Id => "mymod";
+    public override string DisplayName => "My Mod";
+    public override uint AppId => 123456;
+    public override IEngineVariant EngineVariant => new EngineVariant
+    {
+        NetchanEncryption = false,
+        LongFragmentFields = true,
+        EntityIndexBits = 13,
+        // ...only what differs
+    };
+    public override IServerMessageHandler CreateMessageHandler() => new MyModMessageHandler();
+}
+
+GameLoginProviders.Register(new MyModLoginProvider());
+```
 
 ## Commands
 

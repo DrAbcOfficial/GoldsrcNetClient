@@ -33,39 +33,27 @@ namespace GoldsrcNetClient.Core.Game;
 /// </remarks>
 public class SvenCoopMessageHandler : HalfLifeMessageHandler
 {
-    #region SC-specific Events
-
-    /// <summary>Raised when fog settings change (also available in CS).</summary>
-    public event Action<FogEvent>? Fog;
-
     /// <summary>Raised for SC-specific messages with raw data when structure is unknown.</summary>
     public event Action<RawUserMessage>? OnScSpecificMessage;
-
-    #endregion
 
     /// <inheritdoc />
     protected override bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, MessageReader reader)
     {
         switch (name)
         {
-            case "Fog": ParseFogSc(reader); return true;
-            case "Camera": ParseScRaw(reader, name); return true;
-            case "CameraMouse": ParseScRaw(reader, name); return true;
-            case "CbElec": ParseScRaw(reader, name); return true;
-            case "CreateBlood": ParseScRaw(reader, name); return true;
-            case "GargSplash": ParseScRaw(reader, name); return true;
-            case "Gib": ParseScRaw(reader, name); return true;
-            case "SporeTrail": ParseScRaw(reader, name); return true;
-            case "ToxicCloud": ParseScRaw(reader, name); return true;
-            default: return base.DispatchUserMessage(connection, index, name, reader);
+            case "Camera":
+            case "CameraMouse":
+            case "CbElec":
+            case "CreateBlood":
+            case "GargSplash":
+            case "Gib":
+            case "SporeTrail":
+            case "ToxicCloud":
+                ParseScRaw(reader, name);
+                return true;
+            default:
+                return base.DispatchUserMessage(connection, index, name, reader);
         }
-    }
-
-    /// <summary>Fog: byte R, G, B, Density</summary>
-    protected virtual void ParseFogSc(MessageReader r)
-    {
-        var ev = new FogEvent(r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte());
-        Fog?.Invoke(ev);
     }
 
     /// <summary>Raises <see cref="OnScSpecificMessage"/> with the remaining data for unrecognized SC-specific messages.</summary>

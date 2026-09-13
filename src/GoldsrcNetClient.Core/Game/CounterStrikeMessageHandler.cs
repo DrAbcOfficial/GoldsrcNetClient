@@ -48,8 +48,6 @@ public class CounterStrikeMessageHandler : HalfLifeMessageHandler
     public event Action<ArmorTypeEvent>? ArmorType;
     /// <summary>Raised when spectator crosshair is toggled (Counter-Strike).</summary>
     public event Action<CrosshairEvent>? Crosshair;
-    /// <summary>Raised when fog settings change (Counter-Strike / Sven Co-op).</summary>
-    public event Action<FogEvent>? Fog;
     /// <summary>Raised when night vision is toggled (Counter-Strike).</summary>
     public event Action<NvgToggleEvent>? NvgToggle;
     /// <summary>Raised when a weapon/item is received (Counter-Strike).</summary>
@@ -111,7 +109,6 @@ public class CounterStrikeMessageHandler : HalfLifeMessageHandler
             case "BlinkAcct": ParseBlinkAcct(reader); return true;
             case "ArmorType": ParseArmorType(reader); return true;
             case "Crosshair": ParseCrosshair(reader); return true;
-            case "Fog": ParseFog(reader); return true;
             case "NVGToggle": ParseNvgToggle(reader); return true;
             case "ReceiveW": ParseReceiveW(reader); return true;
             case "ReloadSound": ParseReloadSound(reader); return true;
@@ -238,13 +235,6 @@ public class CounterStrikeMessageHandler : HalfLifeMessageHandler
     {
         var ev = new CrosshairEvent(r.ReadByte());
         Crosshair?.Invoke(ev);
-    }
-
-    /// <summary>Fog: byte R, G, B, Density</summary>
-    protected virtual void ParseFog(MessageReader r)
-    {
-        var ev = new FogEvent(r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte());
-        Fog?.Invoke(ev);
     }
 
     /// <summary>NVGToggle: byte Mode</summary>

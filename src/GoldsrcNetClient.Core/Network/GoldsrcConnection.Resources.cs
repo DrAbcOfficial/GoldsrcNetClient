@@ -1,23 +1,27 @@
 using GoldsrcNetClient.Core.Messages;
-using Microsoft.Extensions.Logging;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Util;
+using Microsoft.Extensions.Logging;
 
 namespace GoldsrcNetClient.Core.Network;
 
+/// <summary>
+/// Bit-packed parser for the server's <c>svc_resourcelist</c>. The raw payload
+/// is echoed back on svc_resourcerequest (real-client behavior).
+/// </summary>
 public partial class GoldsrcConnection
 {
     private void ProcessResourceList(ConnectionContext ctx, MessageReader reader)
     {
-        // Sven Co-op widened two fields vs. Valve GoldSrc (Ghidra: SV_SendResources
+        // Field widths follow the engine branch (Ghidra: SV_SendResources
         // FUN_01da4200 / consistency FUN_01db83a0 in hw.dll build 10257):
-        //   - resource count:       16 bits (Valve/ReHLDS: 12, RESOURCE_INDEX_BITS)
-        //   - consistency abs index: 16 bits (Valve/ReHLDS: 10)
-        // Everything else matches ReHLDS's SV_SendResources: type 4 bits, name as
+        // Sven widened resource count and the consistency absolute index to
+        // 16 bits (Valve/ReHLDS: 12 and 10, RESOURCE_INDEX_BITS). Everything
+        // else matches ReHLDS's SV_SendResources: type 4 bits, name as
         // bit-string, index 12, download size 24, flags 3, MD5 16B if RES_CUSTOM,
         // reserved 1+32B, consistency delta 5 bits with a 1-bit short/abs selector.
-        int countBits = _useLongFragmentFields ? 16 : 12;
-        int absIndexBits = _useLongFragmentFields ? 16 : 10;
+        int countBits = _variant.ResourceIndexBits;
+        int absIndexBits = _variant.ConsistencyIndexBits;
 
         int bitIdx = reader.Offset * 8;
         uint resourceCount = 0;
@@ -44,31 +48,13 @@ public partial class GoldsrcConnection
             if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref flag, 3)) return;
             r.Flag = (byte)flag;
 
-            if ((r.Flag & (byte)ResourceFlag.Custom) != 0)
-            {
-                byte[] md5 = new byte[16];
-                for (int b = 0; b < 16; b++)
-                {
-                    uint bb = 0;
-                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref bb, 8)) return;
-                    md5[b] = (byte)bb;
-                }
-                r.Md5 = md5;
-            }
+            if ((r.Flag & (byte)ResourceFlag.Custom) != 0
+                && !ReadFixedBytes(reader.Data, ref bitIdx, reader.Size, 16, out r.Md5)) return;
 
             uint hasReserved = 0;
             if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasReserved, 1)) return;
-            if (hasReserved != 0)
-            {
-                byte[] reserved = new byte[32];
-                for (int b = 0; b < 32; b++)
-                {
-                    uint bb = 0;
-                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref bb, 8)) return;
-                    reserved[b] = (byte)bb;
-                }
-                r.Reserved = reserved;
-            }
+            if (hasReserved != 0
+                && !ReadFixedBytes(reader.Data, ref bitIdx, reader.Size, 32, out r.Reserved)) return;
 
             r.NeedConsistency = false;
         }
@@ -90,7 +76,6 @@ public partial class GoldsrcConnection
 
                 if (indexOrDiff == 0)
                 {
-                    lastIndex = 0;
                     uint idx = 0;
                     if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref idx, absIndexBits)) return;
                     lastIndex = (int)idx;
@@ -111,5 +96,19 @@ public partial class GoldsrcConnection
         }
 
         reader.Offset = (bitIdx + 7) / 8;
+    }
+
+    /// <summary>Reads <paramref name="count"/> raw bytes from the bitstream.</summary>
+    private static bool ReadFixedBytes(byte[] data, ref int bitIdx, int size, int count, out byte[] bytes)
+    {
+        bytes = new byte[count];
+        for (int b = 0; b < count; b++)
+        {
+            uint v = 0;
+            if (!BitReader.ReadBits(data, ref bitIdx, size, ref v, 8))
+                return false;
+            bytes[b] = (byte)v;
+        }
+        return true;
     }
 }

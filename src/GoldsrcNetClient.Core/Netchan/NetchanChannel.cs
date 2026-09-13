@@ -29,8 +29,7 @@ public sealed class NetchanChannel
     private readonly Lock _lock = new();
     private readonly Queue<byte[]> _reliableQueue = [];
     private readonly FragmentStream[] _streams = [new(), new()];
-    private readonly bool _useEncryption;
-    private readonly bool _longFragmentFields;
+    private readonly IEngineVariant _variant;
 
     // Sequencing and reliability state (mirrors the engine's per-channel bookkeeping).
     private uint _srcSequence = 1;
@@ -48,19 +47,15 @@ public sealed class NetchanChannel
     /// <param name="remote">The server endpoint every packet is sent to.</param>
     /// <param name="send">Transport delegate (typically <see cref="System.Net.Sockets.UdpClient.SendAsync"/>).</param>
     /// <param name="logger">Optional logger.</param>
-    /// <param name="useEncryption">Whether payloads are Munge2-encrypted on transmit and
-    /// decrypted on receive. Disable for engine branches whose netchan is plaintext
-    /// (e.g. Sven Co-op, see <see cref="Game.IGameLoginProvider.UseNetchanEncryption"/>).</param>
-    /// <param name="longFragmentFields">Parse fragment-stream startpos/length as 32-bit
-    /// fields. The Sven Co-op engine branch widened them from Valve's 16-bit fields
-    /// (verified against wire captures); leave false for standard GoldSrc servers.</param>
-    public NetchanChannel(IPEndPoint remote, Func<ReadOnlyMemory<byte>, IPEndPoint, CancellationToken, Task> send, ILogger? logger = null, bool useEncryption = true, bool longFragmentFields = false)
+    /// <param name="variant">Engine-branch dialect selecting Munge2 encryption and the
+    /// fragment header field widths; defaults to the standard Valve branch.</param>
+    public NetchanChannel(IPEndPoint remote, Func<ReadOnlyMemory<byte>, IPEndPoint, CancellationToken, Task> send,
+        ILogger? logger = null, IEngineVariant? variant = null)
     {
         _remote = remote;
         _send = send;
         _logger = logger ?? NullLogger.Instance;
-        _useEncryption = useEncryption;
-        _longFragmentFields = longFragmentFields;
+        _variant = variant ?? Protocol.EngineVariants.Valve;
     }
 
     /// <summary>Queues a reliable message for transmission and sends a packet immediately.</summary>
@@ -114,7 +109,7 @@ public sealed class NetchanChannel
         // of the (flagged) sequence value as key.
         byte[] payload = new byte[payloadLen];
         Array.Copy(datagram, MessageConstants.ConnectedHeadSize, payload, 0, payloadLen);
-        if (_useEncryption)
+        if (_variant.NetchanEncryption)
             MungeEngine.UnMunge2(payload, payloadLen, (int)(sequence & 0xFF));
 
         // Read fragment stream headers (they precede the message data).
@@ -135,7 +130,7 @@ public sealed class NetchanChannel
 
                 uint fragId = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(pos)); pos += 4;
                 int fragOffset, fragLength;
-                if (_longFragmentFields)
+                if (_variant.LongFragmentFields)
                 {
                     // Sven Co-op widened the fragment position/size fields to 32 bit
                     // (wire-verified: a 1-of-1 fragment announces length 43, i.e. the
@@ -319,7 +314,7 @@ public sealed class NetchanChannel
         // without netchan munge (Sven Co-op) receive the body as-is instead.
         int bodySize = packet.Length - MessageConstants.ConnectedHeadSize;
         byte[] body = packet[MessageConstants.ConnectedHeadSize..];
-        if (_useEncryption)
+        if (_variant.NetchanEncryption)
             MungeEngine.Munge2(body, bodySize, (int)(w1 & 0xFF));
         body.CopyTo(packet, MessageConstants.ConnectedHeadSize);
 

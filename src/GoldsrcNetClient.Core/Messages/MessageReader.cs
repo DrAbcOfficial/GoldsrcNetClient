@@ -125,29 +125,11 @@ public class MessageReader
         return v;
     }
 
-    /// <summary>Reads a little-endian 64-bit unsigned integer. Returns 0 on overflow.</summary>
-    public ulong ReadUInt64()
-    {
-        if (_size - Offset < 8) return 0;
-        ulong v = BitConverter.ToUInt64(_data, Offset);
-        Offset += 8;
-        return v;
-    }
-
     /// <summary>Reads a single unsigned byte. Returns 0 on overflow.</summary>
     public byte ReadByte()
     {
         if (_size - Offset < 1) return 0;
         return _data[Offset++];
-    }
-
-    /// <summary>Reads a signed 8-bit integer.</summary>
-    /// <returns>True on success; false on overflow (value set to 0).</returns>
-    public bool ReadSByte(out sbyte value)
-    {
-        if (_size - Offset < 1) { value = 0; return false; }
-        value = (sbyte)_data[Offset++];
-        return true;
     }
 
     /// <summary>Reads a little-endian signed 16-bit integer.</summary>
@@ -170,16 +152,6 @@ public class MessageReader
         return true;
     }
 
-    /// <summary>Reads a little-endian signed 64-bit integer.</summary>
-    /// <returns>True on success; false on overflow (value set to 0).</returns>
-    public bool ReadInt64(out long value)
-    {
-        if (_size - Offset < 8) { value = 0; return false; }
-        value = BitConverter.ToInt64(_data, Offset);
-        Offset += 8;
-        return true;
-    }
-
     /// <summary>Reads a little-endian 32-bit IEEE 754 float.</summary>
     /// <returns>True on success; false on overflow (value set to 0).</returns>
     public bool ReadSingle(out float value)
@@ -190,13 +162,23 @@ public class MessageReader
         return true;
     }
 
-    /// <summary>Reads a little-endian 64-bit IEEE 754 double.</summary>
-    /// <returns>True on success; false on overflow (value set to 0).</returns>
-    public bool ReadDouble(out double value)
+    /// <summary>
+    /// Overlays a blittable struct on the raw bytes at the current offset and
+    /// advances past it — the same view the engine takes of signon blocks
+    /// (<c>svc_serverinfo</c>, <c>svc_newmovevars</c>, <c>svc_newusermsg</c>).
+    /// </summary>
+    /// <returns>True if enough bytes remained; false on overflow (value set to default).</returns>
+    public unsafe bool ReadStruct<T>(out T value) where T : unmanaged
     {
-        if (_size - Offset < 8) { value = 0; return false; }
-        value = BitConverter.ToDouble(_data, Offset);
-        Offset += 8;
+        int size = sizeof(T);
+        if (_size - Offset < size)
+        {
+            value = default;
+            return false;
+        }
+        fixed (byte* p = &_data[Offset])
+            value = *(T*)p;
+        Offset += size;
         return true;
     }
 
