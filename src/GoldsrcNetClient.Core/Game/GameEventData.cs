@@ -578,3 +578,36 @@ public readonly record struct ScPortalUpdateEvent(bool Removed, int Entity,
 
 /// <summary>Sven Co-op ClServerInfo: server info handshake (key feeds GenerateKey).</summary>
 public readonly record struct ScClServerInfoEvent(byte Flag, int Value, string Key);
+
+/// <summary>Sven Co-op MapList: virtual map vote list. Delivered to the CMapVotePanel
+/// VGUI class (vtable+0x21C) whose handler multiplexes on a command byte:
+/// <list type="bullet">
+/// <item>0 — full reset: the panel clears its buttons and stores <see cref="TotalMaps"/>.</item>
+/// <item>0x7B ('{') — close/hide the vote panel; no further payload.</item>
+/// <item>any other value — incremental update: <see cref="StartIndex"/>..<see cref="EndIndex"/>
+/// (exclusive) map names follow, one string per entry.</item>
+/// </list></summary>
+public readonly record struct ScMapListEvent(byte Command, short TotalMaps, short StartIndex, short EndIndex, string[] MapNames)
+{
+    /// <summary>Command 0: reset the list to <see cref="TotalMaps"/> empty slots.</summary>
+    public bool IsReset => Command == 0;
+    /// <summary>Command 0x7B: hide/close the map vote panel.</summary>
+    public bool IsClose => Command == 0x7B;
+    /// <summary>Any other command: incremental map-name update.</summary>
+    public bool IsUpdate => Command != 0 && Command != 0x7B;
+}
+
+/// <summary>Sven Co-op VoteMenu: yes/no vote prompt delivered to the vote panel VGUI
+/// class (vtable+0x214). Empty yes/no labels mean the client shows the default
+/// "#Menu_Yes" / "#Menu_No" strings.</summary>
+public readonly record struct ScVoteMenuEvent(byte VoteId, string Question, string YesLabel, string NoLabel);
+
+/// <summary>Sven Co-op ClExtrasInfo: per-player encrypted authorisation update. The wire
+/// format is four length-prefixed blocks framing a CryptoPP authenticated-encryption
+/// blob: plain length, IV, encrypted data (12-byte header + body), and a digest whose
+/// length must equal the session key length. The key is derived client-side by
+/// GenerateKey from the ClServerInfo handshake and never leaves the client, so the
+/// payload cannot be decrypted by a third-party implementation (by design — it sets
+/// per-player admin levels in the scoreboard table). Only the framing is decoded here;
+/// the opaque blocks are exposed for logging/relay purposes.</summary>
+public readonly record struct ScClExtrasInfoEvent(int PlainLength, byte[] Iv, byte[] EncryptedData, byte[] EncryptedDigest);

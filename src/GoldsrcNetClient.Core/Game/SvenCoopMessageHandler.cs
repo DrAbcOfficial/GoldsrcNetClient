@@ -21,14 +21,23 @@ namespace GoldsrcNetClient.Core.Game;
 /// (long ammo maxima), TextMsg (4 format params), HudText (single string), Concuss
 /// (3 floats), Fog (extended), GameTitle (no payload), ShowMenu, VGUIMenu, HideHUD (short).</para>
 ///
-/// <para>Messages handled inside VGUI panel virtuals (MapList, VoteMenu) and the
-/// encrypted ClExtrasInfo blob cannot be decoded from the client and are raised as raw
-/// events via <see cref="OnScSpecificMessage"/>.</para>
+/// <para>Messages handled inside VGUI panel virtuals are decoded through the panel
+/// classes' vtables: MapList (CMapVotePanel::vftable+0x21C) and VoteMenu
+/// (vtable+0x214). ClExtrasInfo frames a CryptoPP authenticated-encryption blob whose
+/// key is derived client-side by GenerateKey from the ClServerInfo handshake — only
+/// its wire framing can be decoded, and the opaque blocks are exposed as-is.</para>
 /// </remarks>
 public class SvenCoopMessageHandler : HalfLifeMessageHandler
 {
     #region Events
 
+    /// <summary>Raised for the map vote list (decoded through CMapVotePanel's vtable handler).</summary>
+    public event Action<ScMapListEvent>? ScMapList;
+    /// <summary>Raised when a yes/no vote prompt is displayed (decoded through the vote panel's vtable handler).</summary>
+    public event Action<ScVoteMenuEvent>? ScVoteMenu;
+    /// <summary>Raised for the encrypted per-player authorisation update (framing only —
+    /// the payload is CryptoPP AEAD sealed with a client-derived key).</summary>
+    public event Action<ScClExtrasInfoEvent>? ScClExtrasInfo;
     /// <summary>Raised for SC-specific messages with raw data when the structure cannot be decoded.</summary>
     public event Action<RawUserMessage>? OnScSpecificMessage;
 
@@ -238,6 +247,9 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     private void OnScInventoryRemove(ScInventoryRemoveEvent ev) => ScInventoryRemove?.Invoke(ev);
     private void OnScPortalUpdate(ScPortalUpdateEvent ev) => ScPortalUpdate?.Invoke(ev);
     private void OnScClServerInfo(ScClServerInfoEvent ev) => ScClServerInfo?.Invoke(ev);
+    private void OnScMapList(ScMapListEvent ev) => ScMapList?.Invoke(ev);
+    private void OnScVoteMenu(ScVoteMenuEvent ev) => ScVoteMenu?.Invoke(ev);
+    private void OnScClExtrasInfo(ScClExtrasInfoEvent ev) => ScClExtrasInfo?.Invoke(ev);
 
     #endregion
 
@@ -317,14 +329,10 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
             case "Flamethwr": ParseFlamethrower(reader); return true;
             case "ChangeSky": ParseChangeSky(reader); return true;
             case "ClServerInfo": ParseClServerInfo(reader); return true;
+            case "ClExtrasInfo": ParseClExtrasInfo(reader); return true;
             case "EndVote": ParseEndVote(reader); return true;
-
-            // ── Undecodable from the client: VGUI panel virtuals / encrypted blob ──
-            case "MapList":
-            case "VoteMenu":
-            case "ClExtrasInfo":
-                ParseScRaw(reader, name);
-                return true;
+            case "MapList": ParseMapList(reader); return true;
+            case "VoteMenu": ParseVoteMenu(reader); return true;
 
             default:
                 return base.DispatchUserMessage(connection, index, name, reader);
@@ -1002,6 +1010,69 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     protected virtual void ParseEndVote(MessageReader r)
     {
         // no payload — arrival itself clears the vote UI
+    }
+
+    /// <summary>MapList (Sven): decoded from CMapVotePanel's vtable+0x21C virtual. A command
+    /// byte selects reset (0: clears the list and stores the total count), close (0x7B), or
+    /// an incremental update (start/end shorts plus one map-name string per entry).</summary>
+    protected virtual void ParseMapList(MessageReader r)
+    {
+        byte command = r.ReadByte();
+        short totalMaps = 0, startIndex = 0, endIndex = 0;
+        string[] mapNames = [];
+        if (command == 0)
+        {
+            totalMaps = ReadShort(r);
+        }
+        else if (command != 0x7B)
+        {
+            startIndex = ReadShort(r);
+            endIndex = ReadShort(r);
+            int count = endIndex - startIndex;
+            if (count > 0)
+            {
+                mapNames = new string[count];
+                for (int i = 0; i < count; i++)
+                    mapNames[i] = r.ReadString();
+            }
+        }
+        OnScMapList(new ScMapListEvent(command, totalMaps, startIndex, endIndex, mapNames));
+    }
+
+    /// <summary>VoteMenu (Sven): decoded from the vote panel's vtable+0x214 virtual:
+    /// vote id byte, question string, yes-label and no-label strings (empty labels
+    /// fall back to "#Menu_Yes"/"#Menu_No" on the client).</summary>
+    protected virtual void ParseVoteMenu(MessageReader r)
+    {
+        byte voteId = r.ReadByte();
+        OnScVoteMenu(new ScVoteMenuEvent(voteId, r.ReadString(), r.ReadString(), r.ReadString()));
+    }
+
+    /// <summary>ClExtrasInfo (Sven): four length-prefixed blocks framing a CryptoPP
+    /// authenticated-encryption payload — plain length, IV, encrypted data, and a
+    /// digest sized to the session key. The client derives the key via GenerateKey
+    /// from the ClServerInfo handshake and decrypts to
+    /// "playerIndex\nauthId\n\"name\"\nlevel" which updates the scoreboard's per-player
+    /// admin level; the key material never leaves the client, so only the framing is
+    /// decoded here.</summary>
+    protected virtual void ParseClExtrasInfo(MessageReader r)
+    {
+        int plainLength = ReadInt32(r);
+        byte[] iv = ReadBlock(r);
+        byte[] encryptedData = ReadBlock(r);
+        byte[] encryptedDigest = ReadBlock(r);
+        OnScClExtrasInfo(new ScClExtrasInfoEvent(plainLength, iv, encryptedData, encryptedDigest));
+    }
+
+    /// <summary>Reads a 32-bit length followed by that many bytes (empty on invalid length).</summary>
+    private static byte[] ReadBlock(MessageReader r)
+    {
+        int length = ReadInt32(r);
+        if (length <= 0)
+            return [];
+        var data = new byte[length];
+        r.ReadBytes(data);
+        return data;
     }
 
     // ── read helpers ──

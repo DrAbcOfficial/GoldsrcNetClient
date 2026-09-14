@@ -375,17 +375,96 @@ public class SvenCoopMessageHandlerTests
     }
 
     [Fact]
-    public void UnparsableMessages_RaiseRawScEvent()
+    public void MapList_ResetCommandStoresTotalOnly()
     {
-        var payload = Encoding.UTF8.GetBytes("map01\0");
-        var (handler, reader, conn) = Setup(0x5F, "MapList", payload);
-        RawUserMessage? raw = null;
-        handler.OnScSpecificMessage += m => raw = m;
+        var (handler, reader, conn) = Setup(0x5F, "MapList", 0x00, 0x0A, 0x00);
+        ScMapListEvent? ev = null;
+        handler.ScMapList += e => ev = e;
 
         Assert.True(handler.HandleMessage(conn, 0x5F, reader));
-        Assert.NotNull(raw);
-        Assert.Equal("MapList", raw!.Value.Name);
-        Assert.Equal(payload, raw.Value.Data);
+        Assert.Equal(4, reader.Offset);
+        Assert.NotNull(ev);
+        Assert.True(ev!.Value.IsReset);
+        Assert.Equal(10, ev.Value.TotalMaps);
+        Assert.Empty(ev.Value.MapNames);
+    }
+
+    [Fact]
+    public void MapList_CloseCommandConsumesCommandByteOnly()
+    {
+        var (handler, reader, conn) = Setup(0x5F, "MapList", 0x7B);
+        ScMapListEvent? ev = null;
+        handler.ScMapList += e => ev = e;
+
+        Assert.True(handler.HandleMessage(conn, 0x5F, reader));
+        Assert.Equal(2, reader.Offset);
+        Assert.NotNull(ev);
+        Assert.True(ev!.Value.IsClose);
+    }
+
+    [Fact]
+    public void MapList_UpdateCommandReadsMapNameRange()
+    {
+        var payload = new List<byte> { 0x05, 0x02, 0x00, 0x04, 0x00 }; // cmd 5, start 2, end 4
+        payload.AddRange(Encoding.UTF8.GetBytes("map_a\0"));
+        payload.AddRange(Encoding.UTF8.GetBytes("map_b\0"));
+
+        var (handler, reader, conn) = Setup(0x5F, "MapList", payload.ToArray());
+        ScMapListEvent? ev = null;
+        handler.ScMapList += e => ev = e;
+
+        Assert.True(handler.HandleMessage(conn, 0x5F, reader));
+        Assert.Equal(1 + payload.Count, reader.Offset);
+        Assert.NotNull(ev);
+        Assert.True(ev!.Value.IsUpdate);
+        Assert.Equal(2, ev.Value.StartIndex);
+        Assert.Equal(4, ev.Value.EndIndex);
+        Assert.Equal(new[] { "map_a", "map_b" }, ev.Value.MapNames);
+    }
+
+    [Fact]
+    public void VoteMenu_ParsesIdQuestionAndLabels()
+    {
+        var payload = new List<byte> { 0x03 };
+        payload.AddRange(Encoding.UTF8.GetBytes("#Vote_Map\0"));
+        payload.AddRange(Encoding.UTF8.GetBytes("\0")); // empty yes → "#Menu_Yes"
+        payload.AddRange(Encoding.UTF8.GetBytes("Kick him\0"));
+
+        var (handler, reader, conn) = Setup(0x60, "VoteMenu", payload.ToArray());
+        ScVoteMenuEvent? ev = null;
+        handler.ScVoteMenu += e => ev = e;
+
+        Assert.True(handler.HandleMessage(conn, 0x60, reader));
+        Assert.NotNull(ev);
+        Assert.Equal(3, ev!.Value.VoteId);
+        Assert.Equal("#Vote_Map", ev.Value.Question);
+        Assert.Equal(string.Empty, ev.Value.YesLabel);
+        Assert.Equal("Kick him", ev.Value.NoLabel);
+    }
+
+    [Fact]
+    public void ClExtrasInfo_ParsesFramingBlocks()
+    {
+        var payload = new List<byte>();
+        payload.AddRange([0x10, 0x00, 0x00, 0x00]);               // plain length = 16
+        payload.AddRange([0x08, 0x00, 0x00, 0x00]);               // iv length = 8
+        payload.AddRange([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        payload.AddRange([0x0C, 0x00, 0x00, 0x00]);               // encrypted length = 12
+        payload.AddRange([0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8]);
+        payload.AddRange([0x10, 0x00, 0x00, 0x00]);               // digest length = 16 (key len)
+        payload.AddRange(Enumerable.Repeat((byte)0xAA, 16).ToArray());
+
+        var (handler, reader, conn) = Setup(0x61, "ClExtrasInfo", payload.ToArray());
+        ScClExtrasInfoEvent? ev = null;
+        handler.ScClExtrasInfo += e => ev = e;
+
+        Assert.True(handler.HandleMessage(conn, 0x61, reader));
+        Assert.Equal(1 + payload.Count, reader.Offset);
+        Assert.NotNull(ev);
+        Assert.Equal(16, ev!.Value.PlainLength);
+        Assert.Equal(new byte[] { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 }, ev.Value.Iv);
+        Assert.Equal(12, ev.Value.EncryptedData.Length);
+        Assert.Equal(16, ev.Value.EncryptedDigest.Length);
     }
 
     [Fact]
