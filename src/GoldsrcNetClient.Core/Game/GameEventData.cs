@@ -335,3 +335,246 @@ public readonly record struct ConcussEvent(byte Amount);
 /// <param name="Name">Message name from SVC_NEWUSERMSG.</param>
 /// <param name="Data">Raw remaining data bytes.</param>
 public readonly record struct RawUserMessage(byte Index, string Name, byte[] Data);
+
+// ─── Sven Co-op ───
+// All layouts below were verified by reverse-engineering svencoop/cl_dlls/client.dll
+// (handler decompiles, see sven_coop_usermsgs.md). Sven replaces several Half-Life
+// message formats with wider types; those are re-declared here as Sc* records so the
+// wire format stays lossless. Fields whose semantics could not be pinned down from
+// the handler code alone keep neutral names (Unknown*/Value*/Float*).
+
+/// <summary>Sven Co-op CurWeapon: wider than the Half-Life format.</summary>
+/// <param name="IsActive">1 if the weapon is currently active.</param>
+/// <param name="WeaponId">Weapon identifier; -1 hides the weapon HUD.</param>
+/// <param name="ClipAmmo">Rounds in the magazine (-1 clamped to 0 by the client).</param>
+/// <param name="ReserveAmmo">Reserve ammunition (-1 clamped to 0 by the client).</param>
+public readonly record struct ScCurWeaponEvent(byte IsActive, short WeaponId, int ClipAmmo, int ReserveAmmo);
+
+/// <summary>Sven Co-op Health: 32-bit health.</summary>
+public readonly record struct ScHealthEvent(int Health);
+
+/// <summary>Sven Co-op Battery (armor): single byte.</summary>
+public readonly record struct ScBatteryEvent(byte Armor);
+
+/// <summary>Sven Co-op AmmoX: 32-bit reserve count.</summary>
+public readonly record struct ScAmmoXEvent(byte AmmoId, int Amount);
+
+/// <summary>Sven Co-op AmmoPickup: 32-bit count.</summary>
+public readonly record struct ScAmmoPickupEvent(byte AmmoId, int Amount);
+
+/// <summary>Sven Co-op WeapPickup: weapon id as a short (Half-Life sends a name string).</summary>
+public readonly record struct ScWeapPickupEvent(short WeaponId);
+
+/// <summary>Sven Co-op WeaponList: primary/secondary ammo maxima are 32-bit.</summary>
+public readonly record struct ScWeaponListEvent(
+    string WeaponName, byte PrimaryAmmoId, int PrimaryAmmoMax,
+    byte SecondaryAmmoId, int SecondaryAmmoMax,
+    byte Slot, byte Position, short WeaponId, byte Flags);
+
+/// <summary>Sven Co-op TextMsg: destination plus the message and its four format parameters.</summary>
+public readonly record struct ScTextMsgEvent(byte MsgDest, string Message, string Param1, string Param2, string Param3, string Param4);
+
+/// <summary>Sven Co-op HudText: a single text/localisation string.</summary>
+public readonly record struct ScHudTextEvent(string Text);
+
+/// <summary>Sven Co-op Concuss: direction vector of the concussion effect.</summary>
+public readonly record struct ScConcussEvent(float DirectionX, float DirectionY, float DirectionZ);
+
+/// <summary>Sven Co-op Fog (format differs from the Counter-Strike Fog message).</summary>
+/// <param name="Leading">Leading short read by the client but not stored.</param>
+/// <param name="Enabled">Fog toggle.</param>
+/// <param name="OriginX/Y/Z">Coordinates read by the client but not stored.</param>
+/// <param name="Unknown">Short read between the coordinates and the colour bytes.</param>
+/// <param name="R/G/B">Fog colour.</param>
+/// <param name="Value1/Value2">Trailing shorts (fog range/density candidates).</param>
+public readonly record struct ScFogEvent(bool Enabled, float OriginX, float OriginY, float OriginZ,
+    short Unknown, byte R, byte G, byte B, short Value1, short Value2);
+
+/// <summary>Sven Co-op ShowMenu: byte-sized slot mask, signed display time, flag byte.</summary>
+public readonly record struct ScShowMenuEvent(byte ValidSlots, sbyte DisplayTime, byte Flags, string Text);
+
+/// <summary>Sven Co-op HideHUD: 16-bit hide mask (Half-Life's HideWeapon uses a byte).</summary>
+public readonly record struct ScHideHudEvent(short Flags);
+
+/// <summary>VoiceMask: per-player voice audibility/ban bitmasks.</summary>
+public readonly record struct VoiceMaskEvent(int AudiblePlayers, int BannedPlayers, byte Flags);
+
+/// <summary>Sven Co-op ViewMode: camera perspective.</summary>
+public readonly record struct ScViewModeEvent(bool ThirdPerson);
+
+/// <summary>Sven Co-op CdAudio: MP3 track request (0 = stop, 1..30 → media/Half-LifeXX).</summary>
+public readonly record struct ScCdAudioEvent(byte Track);
+
+/// <summary>Sven Co-op ClassicMode: classic gameplay mode toggle.</summary>
+public readonly record struct ScClassicModeEvent(bool Enabled);
+
+/// <summary>Sven Co-op VModelPos: view model offset.</summary>
+public readonly record struct ScVModelPosEvent(bool Enabled, float X, float Y, float Z);
+
+/// <summary>Sven Co-op TimeEnd: round timer end (absolute client time).</summary>
+public readonly record struct ScTimeEndEvent(int Seconds);
+
+/// <summary>Sven Co-op OnTank: player is driving a func tank.</summary>
+public readonly record struct ScOnTankEvent(bool OnTank);
+
+/// <summary>Sven Co-op Playlist: media playlist switch.</summary>
+public readonly record struct ScPlaylistEvent(string Playlist);
+
+/// <summary>Sven Co-op Speaksent: server-requested sentence playback.</summary>
+public readonly record struct ScSentenceEvent(string Sentence);
+
+/// <summary>Sven Co-op ValClass: five class/slot values.</summary>
+public readonly record struct ScValClassEvent(short[] Classes);
+
+/// <summary>One team entry of the Sven Co-op TeamNames message.</summary>
+public readonly record struct ScTeamNamesTeam(string Name, float ColorR, float ColorG, float ColorB);
+
+/// <summary>Sven Co-op TeamNames: team list with colours.</summary>
+public readonly record struct ScTeamNamesEvent(ScTeamNamesTeam[] Teams);
+
+/// <summary>Sven Co-op MOTD chunk.</summary>
+public readonly record struct ScMotdEvent(bool IsFinal, string Text);
+
+/// <summary>Sven Co-op ServerName: server hostname (client overrides non-Sven names).</summary>
+public readonly record struct ScServerNameEvent(string ServerName);
+
+/// <summary>Sven Co-op ServerVer: server version string (mismatch disconnects the client).</summary>
+public readonly record struct ScServerVersionEvent(string Version);
+
+/// <summary>Sven Co-op ServerBuild: server build string.</summary>
+public readonly record struct ScServerBuildEvent(string Build);
+
+/// <summary>Sven Co-op NextMap.</summary>
+public readonly record struct ScNextMapEvent(string MapName);
+
+/// <summary>Sven Co-op ScoreInfo: float-based scoreboard entry (format differs from CS).</summary>
+public readonly record struct ScScoreInfoEvent(byte PlayerIndex, float Score, int UnknownLong,
+    float UnknownFloat1, float UnknownFloat2, byte ClassId, byte UnknownByte1, byte UnknownByte2);
+
+/// <summary>Sven Co-op TeamScore: two score values per team.</summary>
+public readonly record struct ScTeamScoreEvent(string TeamName, short Score, short Score2);
+
+/// <summary>Sven Co-op Gib: gib burst at a point with a velocity bias.</summary>
+public readonly record struct ScGibEvent(byte Type, float OriginX, float OriginY, float OriginZ,
+    float VelocityX, float VelocityY, float VelocityZ);
+
+/// <summary>Sven Co-op TE_CUSTOM: subtyped temporary effect.</summary>
+public readonly record struct ScTeCustomEvent(byte SubType, short Id, short Count,
+    float OriginX, float OriginY, float OriginZ, byte Value);
+
+/// <summary>Sven Co-op CbElec: electrified tripwire state (wire byte: bit0-4 entity, bit6 active).</summary>
+public readonly record struct ScCbElecEvent(bool On, byte Entity);
+
+/// <summary>Sven Co-op ShkFlash: shock roach flash at an origin (mode 0 = fire, else impact).</summary>
+public readonly record struct ScShkFlashEvent(float X, float Y, float Z, byte Mode);
+
+/// <summary>Sven Co-op TracerDecal: tracer endpoints and decal type.</summary>
+public readonly record struct ScTracerDecalEvent(float StartX, float StartY, float StartZ,
+    float EndX, float EndY, float EndZ, byte DecalType, byte Unknown);
+
+/// <summary>Sven Co-op SporeTrail: spore trail attach state for an entity.</summary>
+public readonly record struct ScSporeTrailEvent(short Entity, bool Attach);
+
+/// <summary>Sven Co-op CreateBlood (a.k.a. SpawnBlood): blood effect.</summary>
+public readonly record struct ScCreateBloodEvent(float X, float Y, float Z, byte Color, byte Amount);
+
+/// <summary>Sven Co-op GargSplash: gargantua splash with colour triple (the client
+/// reads coordinates and takes their absolute value before use).</summary>
+public readonly record struct ScGargSplashEvent(float X, float Y, float Z, float ColorR, float ColorG, float ColorB);
+
+/// <summary>Sven Co-op StartSound: flag-driven sound playback. Optional fields are present
+/// only when the corresponding flag bit is set (0x10 entity, 0x1 volume, 0x2 attenuation,
+/// 0x4 pitch, 0x8 origin, 0x8000 duration). Channel and sound index are always sent.</summary>
+public readonly record struct ScStartSoundEvent(short Flags, short? Entity, byte? Volume, byte? Attenuation,
+    byte? Pitch, float? OriginX, float? OriginY, float? OriginZ, float? Duration, byte Channel, short SoundIndex);
+
+/// <summary>Sven Co-op ToxicCloud.</summary>
+public readonly record struct ScToxicCloudEvent(float X, float Y, float Z);
+
+/// <summary>Sven Co-op SRDetonate: shock roach detonation.</summary>
+public readonly record struct ScSrDetonateEvent(float X, float Y, float Z, byte Radius);
+
+/// <summary>Sven Co-op SRPrimed: shock roach fuse.</summary>
+public readonly record struct ScSrPrimedEvent(byte Entity, float Time);
+
+/// <summary>Sven Co-op SRPrimedOff: cancels a primed shock roach.</summary>
+public readonly record struct ScSrPrimedOffEvent(byte Entity);
+
+/// <summary>Sven Co-op RampSprite: highly configurable sprite ramp effect. Optional fields
+/// are present when the corresponding flag bit is set: 0x1 StartTime, 0x2 FadeIn, 0x4 FadeOut,
+/// 0x8 RenderModeFx (low 5 bits mode, high 3 bits fx), 0x10/0x20/0x40 RGB, 0x8000 trailing
+/// byte, 0x100 secondary colour (3 coords), 0x200-0x4000 further scale bytes.</summary>
+public readonly record struct ScRampSpriteEvent(short Entity, byte LifeTicks, float X, float Y, float Z, short Flags,
+    byte? StartTime, byte? FadeInTime, byte? FadeOutTime, byte? RenderModeFx,
+    byte? R, byte? G, byte? B, byte? UnknownBit15,
+    float? Color2R, float? Color2G, float? Color2B,
+    byte? UnknownBit200, byte? UnknownBit400, byte? UnknownBit800, byte? UnknownBit1000,
+    byte? UnknownBit2000, byte? UnknownBit4000, byte? UnknownBit8000);
+
+/// <summary>Sven Co-op ShieldRic: shield ricochet spark.</summary>
+public readonly record struct ScShieldRicEvent(float X, float Y, float Z);
+
+/// <summary>Sven Co-op WeatherFX: full weather particle description. The trailing short/byte/
+/// float groups are weather parameters whose per-field semantics the client passes through
+/// opaquely, so they keep neutral names.</summary>
+public readonly record struct ScWeatherFxEvent(short Type,
+    float MinsX, float MinsY, float MinsZ, float MaxsX, float MaxsY, float MaxsZ,
+    float AngleX, float AngleY, float AngleZ,
+    short UnknownShort1, float Float1, byte Byte1, short UnknownShort2, float Float2,
+    byte Byte2, byte Byte3, float Float3, byte Byte4, byte Byte5, byte Byte6, byte Byte7,
+    float Float4, float Float5, float Float6, float Float7);
+
+/// <summary>Sven Co-op CameraMouse: fixed camera mode; mode 2 carries a parameter string.</summary>
+public readonly record struct ScCameraMouseEvent(byte Mode, string Parameter);
+
+/// <summary>Sven Co-op Flamethwr: flame thrower flame segment.</summary>
+public readonly record struct ScFlamethrowerEvent(byte Entity, float StartX, float StartY, float StartZ,
+    float EndX, float EndY, float EndZ);
+
+/// <summary>Sven Co-op ChangeSky: sky box name and colour (all -1 means keep default).</summary>
+public readonly record struct ScChangeSkyEvent(string SkyName, float ColorR, float ColorG, float ColorB);
+
+/// <summary>Sven Co-op ToggleElem: HUD element channel on/off.</summary>
+public readonly record struct ScToggleElemEvent(byte Channel, bool State);
+
+/// <summary>Sven Co-op CustSpr (a.k.a. CustomSprite): custom HUD sprite element.</summary>
+public readonly record struct ScCustomSpriteEvent(byte Channel, int Flags, string Sprite, byte X, byte Y,
+    short Width, short Height, byte R1, byte G1, byte B1, byte A1, byte R2, byte G2, byte B2, byte A2,
+    byte Unknown1, byte Unknown2, float Float1, float Float2, float Float3, float Float4, float Float5, byte Unknown3);
+
+/// <summary>Sven Co-op NumDisplay: custom numeric HUD element.</summary>
+public readonly record struct ScNumDisplayEvent(byte Channel, int Flags, float Value, byte X, byte Y,
+    float Width, float Height, byte R1, byte G1, byte B1, byte A1, byte R2, byte G2, byte B2, byte A2,
+    string Font, byte RegionX, byte RegionY, short RegionWidth, short RegionHeight,
+    float Float1, float Float2, float Float3, float Float4, byte Unknown);
+
+/// <summary>Sven Co-op UpdateNum: value update for a numeric HUD element.</summary>
+public readonly record struct ScUpdateNumEvent(byte Channel, float Value);
+
+/// <summary>Sven Co-op TimeDisplay: custom timer HUD element.</summary>
+public readonly record struct ScTimeDisplayEvent(byte Channel, int Flags, float Value1, float Value2,
+    float Width, float Height, byte R1, byte G1, byte B1, byte A1, byte R2, byte G2, byte B2, byte A2,
+    string Font, byte RegionX, byte RegionY, short RegionWidth, short RegionHeight,
+    float Float1, float Float2, float Float3, float Float4, byte Unknown);
+
+/// <summary>Sven Co-op UpdateTime: time update for a timer HUD element.</summary>
+public readonly record struct ScUpdateTimeEvent(byte Channel, float Time, float Duration);
+
+/// <summary>Sven Co-op InvAdd: inventory item added. The five strings are the item's
+/// name/icon/description texts (client stores them opaquely).</summary>
+public readonly record struct ScInventoryAddEvent(int Id, bool Flag1, bool Flag2, bool Flag3, float Time,
+    string String1, string String2, string String3, string String4, string String5);
+
+/// <summary>Sven Co-op InvRemove: inventory items removed (id 0 = all matching).</summary>
+public readonly record struct ScInventoryRemoveEvent(int Id, byte Flags);
+
+/// <summary>Sven Co-op PrtlUpdt (a.k.a. PortalUpdate): portal/monitor entity update with
+/// conditional trailing sections per type/style.</summary>
+public readonly record struct ScPortalUpdateEvent(bool Removed, int Entity,
+    float[] Vec1, float[] Vec2, byte Type, byte Style, float Life,
+    byte Byte1, int Long1, int Long2, bool Flag1,
+    int? ModelIndex, float[]? ModelOrigin, float[]? ModelAngles,
+    int? Long3, int? Long4, bool? FlagA, bool? FlagB, string? Name);
+
+/// <summary>Sven Co-op ClServerInfo: server info handshake (key feeds GenerateKey).</summary>
+public readonly record struct ScClServerInfoEvent(byte Flag, int Value, string Key);
