@@ -32,11 +32,13 @@ public class SvenCoopMessageHandlerTests
         return (handler, reader, connection);
     }
 
-    /// <summary>Wraps a 16-bit GoldSrc coordinate (value × 8).</summary>
-    private static IEnumerable<byte> Coord(short raw)
+    /// <summary>Wraps a 32-bit Sven coordinate (value × 8).</summary>
+    private static IEnumerable<byte> Coord(int raw)
     {
         yield return (byte)(raw & 0xFF);
-        yield return (byte)(raw >> 8);
+        yield return (byte)((raw >> 8) & 0xFF);
+        yield return (byte)((raw >> 16) & 0xFF);
+        yield return (byte)((raw >> 24) & 0xFF);
     }
 
     [Fact]

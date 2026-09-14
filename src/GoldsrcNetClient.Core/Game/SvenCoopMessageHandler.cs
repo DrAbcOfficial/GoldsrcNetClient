@@ -431,7 +431,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     {
         ReadShort(r); // leading, unused
         bool enabled = r.ReadByte() != 0;
-        float x = ReadCoord(r), y = ReadCoord(r), z = ReadCoord(r);
+        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
         short unknown = ReadShort(r);
         byte red = r.ReadByte(), green = r.ReadByte(), blue = r.ReadByte();
         OnScFog(new ScFogEvent(enabled, x, y, z, unknown, red, green, blue, ReadShort(r), ReadShort(r)));
@@ -443,6 +443,16 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
         byte type = r.ReadByte();
         string data = type == 4 ? r.ReadString() : string.Empty;
         OnVguiMenu(new VguiMenuEvent(type, data));
+    }
+
+    /// <summary>Damage: same field order as Half-Life, but Sven coordinates are 32-bit
+    /// (the dedicated server registers Damage with size 18 = 1+1+4+3×4).</summary>
+    protected override void ParseDamage(MessageReader r)
+    {
+        byte save = r.ReadByte();
+        byte take = r.ReadByte();
+        int damageType = ReadInt32(r);
+        OnDamage(new DamageEvent(save, take, damageType, ReadCoord32(r), ReadCoord32(r), ReadCoord32(r)));
     }
 
     // ── Sven-specific parsers ──
@@ -505,7 +515,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
         for (int i = 0; i < count; i++)
         {
             var name = r.ReadString();
-            float cr = ReadCoord(r), cg = ReadCoord(r), cb = ReadCoord(r);
+            float cr = ReadCoord32(r), cg = ReadCoord32(r), cb = ReadCoord32(r);
             teams[i] = new ScTeamNamesTeam(name, cr, cg, cb);
         }
         OnScTeamNames(new ScTeamNamesEvent(teams));
@@ -566,7 +576,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
         float x = 0, y = 0, z = 0;
         if (enabled)
         {
-            x = ReadCoord(r); y = ReadCoord(r); z = ReadCoord(r);
+            x = ReadCoord32(r); y = ReadCoord32(r); z = ReadCoord32(r);
         }
         OnScVModelPos(new ScVModelPosEvent(enabled, x, y, z));
     }
@@ -785,8 +795,8 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
         float ox = 0, oy = 0, oz = 0, vx = 0, vy = 0, vz = 0;
         if (type is 0 or 1 or 2 or 4)
         {
-            ox = ReadCoord(r); oy = ReadCoord(r); oz = ReadCoord(r);
-            vx = ReadCoord(r); vy = ReadCoord(r); vz = ReadCoord(r);
+            ox = ReadCoord32(r); oy = ReadCoord32(r); oz = ReadCoord32(r);
+            vx = ReadCoord32(r); vy = ReadCoord32(r); vz = ReadCoord32(r);
         }
         OnScGib(new ScGibEvent(type, ox, oy, oz, vx, vy, vz));
     }
@@ -805,7 +815,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
             count = ReadShort(r);
             if (count > 0)
             {
-                ox = ReadCoord(r); oy = ReadCoord(r); oz = ReadCoord(r);
+                ox = ReadCoord32(r); oy = ReadCoord32(r); oz = ReadCoord32(r);
             }
         }
         else if (subType == 3)
@@ -825,15 +835,15 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// <summary>ShkFlash (Sven): origin triple plus mode byte (0 = fire, else impact).</summary>
     protected virtual void ParseShkFlash(MessageReader r)
     {
-        float x = ReadCoord(r), y = ReadCoord(r), z = ReadCoord(r);
+        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
         OnScShkFlash(new ScShkFlashEvent(x, y, z, r.ReadByte()));
     }
 
     /// <summary>TracerDecal (Sven): start/end triples, decal type byte, trailing byte.</summary>
     protected virtual void ParseTracerDecal(MessageReader r)
     {
-        float sx = ReadCoord(r), sy = ReadCoord(r), sz = ReadCoord(r);
-        float ex = ReadCoord(r), ey = ReadCoord(r), ez = ReadCoord(r);
+        float sx = ReadCoord32(r), sy = ReadCoord32(r), sz = ReadCoord32(r);
+        float ex = ReadCoord32(r), ey = ReadCoord32(r), ez = ReadCoord32(r);
         byte type = r.ReadByte();
         byte unknown = r.ReadByte();
         OnScTracerDecal(new ScTracerDecalEvent(sx, sy, sz, ex, ey, ez, type, unknown));
@@ -849,7 +859,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// <summary>CreateBlood (Sven): origin triple, colour byte, amount byte.</summary>
     protected virtual void ParseCreateBlood(MessageReader r)
     {
-        float x = ReadCoord(r), y = ReadCoord(r), z = ReadCoord(r);
+        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
         OnScCreateBlood(new ScCreateBloodEvent(x, y, z, r.ReadByte(), r.ReadByte()));
     }
 
@@ -858,10 +868,10 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// then feeds them to the splash temp entity as floats.</summary>
     protected virtual void ParseGargSplash(MessageReader r)
     {
-        float x = ReadCoord(r), y = ReadCoord(r), z = ReadCoord(r);
-        float cr = MathF.Abs(ReadCoord(r));
-        float cg = MathF.Abs(ReadCoord(r));
-        float cb = MathF.Abs(ReadCoord(r));
+        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
+        float cr = MathF.Abs(ReadCoord32(r));
+        float cg = MathF.Abs(ReadCoord32(r));
+        float cb = MathF.Abs(ReadCoord32(r));
         OnScGargSplash(new ScGargSplashEvent(x, y, z, cr, cg, cb));
     }
 
@@ -876,7 +886,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
         float? ox = null, oy = null, oz = null;
         if ((flags & 0x08) != 0)
         {
-            ox = ReadCoord(r); oy = ReadCoord(r); oz = ReadCoord(r);
+            ox = ReadCoord32(r); oy = ReadCoord32(r); oz = ReadCoord32(r);
         }
         float? duration = (flags & 0x8000) != 0 ? ReadFloat(r) : null;
         byte channel = r.ReadByte();
@@ -887,13 +897,13 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// <summary>ToxicCloud (Sven): origin triple.</summary>
     protected virtual void ParseToxicCloud(MessageReader r)
     {
-        OnScToxicCloud(new ScToxicCloudEvent(ReadCoord(r), ReadCoord(r), ReadCoord(r)));
+        OnScToxicCloud(new ScToxicCloudEvent(ReadCoord32(r), ReadCoord32(r), ReadCoord32(r)));
     }
 
     /// <summary>SRDetonate (Sven): origin triple and radius byte.</summary>
     protected virtual void ParseSrDetonate(MessageReader r)
     {
-        float x = ReadCoord(r), y = ReadCoord(r), z = ReadCoord(r);
+        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
         OnScSrDetonate(new ScSrDetonateEvent(x, y, z, r.ReadByte()));
     }
 
@@ -916,7 +926,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     {
         short entity = ReadShort(r);
         byte lifeTicks = r.ReadByte();
-        float x = ReadCoord(r), y = ReadCoord(r), z = ReadCoord(r);
+        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
         short flags = ReadShort(r);
 
         byte? startTime = null, fadeIn = null, fadeOut = null, renderModeFx = null;
@@ -933,7 +943,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
         float? color2R = null, color2G = null, color2B = null;
         if ((flags & 0x100) != 0)
         {
-            color2R = ReadCoord(r); color2G = ReadCoord(r); color2B = ReadCoord(r);
+            color2R = ReadCoord32(r); color2G = ReadCoord32(r); color2B = ReadCoord32(r);
         }
 
         OnScRampSprite(new ScRampSpriteEvent(entity, lifeTicks, x, y, z, flags,
@@ -951,7 +961,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// <summary>ShieldRic (Sven): origin triple.</summary>
     protected virtual void ParseShieldRic(MessageReader r)
     {
-        OnScShieldRic(new ScShieldRicEvent(ReadCoord(r), ReadCoord(r), ReadCoord(r)));
+        OnScShieldRic(new ScShieldRicEvent(ReadCoord32(r), ReadCoord32(r), ReadCoord32(r)));
     }
 
     /// <summary>WeatherFX (Sven): type short, min/max triples, angle triple, then a fixed
@@ -959,8 +969,8 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     protected virtual void ParseWeatherFx(MessageReader r)
     {
         short type = ReadShort(r);
-        float minX = ReadCoord(r), minY = ReadCoord(r), minZ = ReadCoord(r);
-        float maxX = ReadCoord(r), maxY = ReadCoord(r), maxZ = ReadCoord(r);
+        float minX = ReadCoord32(r), minY = ReadCoord32(r), minZ = ReadCoord32(r);
+        float maxX = ReadCoord32(r), maxY = ReadCoord32(r), maxZ = ReadCoord32(r);
         float ax = ReadAngle(r), ay = ReadAngle(r), az = ReadAngle(r);
         short unknownShort1 = ReadShort(r);
         float float1 = ReadFloat(r);
@@ -987,8 +997,8 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     protected virtual void ParseFlamethrower(MessageReader r)
     {
         byte entity = r.ReadByte();
-        float sx = ReadCoord(r), sy = ReadCoord(r), sz = ReadCoord(r);
-        float ex = ReadCoord(r), ey = ReadCoord(r), ez = ReadCoord(r);
+        float sx = ReadCoord32(r), sy = ReadCoord32(r), sz = ReadCoord32(r);
+        float ex = ReadCoord32(r), ey = ReadCoord32(r), ez = ReadCoord32(r);
         OnScFlamethrower(new ScFlamethrowerEvent(entity, sx, sy, sz, ex, ey, ez));
     }
 
@@ -996,7 +1006,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     protected virtual void ParseChangeSky(MessageReader r)
     {
         var sky = r.ReadString();
-        float cr = ReadCoord(r), cg = ReadCoord(r), cb = ReadCoord(r);
+        float cr = ReadCoord32(r), cg = ReadCoord32(r), cb = ReadCoord32(r);
         OnScChangeSky(new ScChangeSkyEvent(sky, cr, cg, cb));
     }
 
@@ -1077,6 +1087,16 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
 
     // ── read helpers ──
 
+    /// <summary>Reads a Sven Co-op coordinate: 32-bit on the wire, scaled by 1/8 —
+    /// unlike stock GoldSrc's 16-bit coordinate. Verified against the dedicated server's
+    /// user-message registration sizes (Damage=18, Fog=24, WeatherFX=68, ShkFlash=13,
+    /// CreateBlood=14, SRDetonate=13, ShieldRic=12), which only add up with 4-byte coords.</summary>
+    protected static float ReadCoord32(MessageReader r)
+    {
+        r.ReadInt32(out int raw);
+        return raw / 8.0f;
+    }
+
     /// <summary>Reads a little-endian 32-bit float (0 on overflow).</summary>
     protected static float ReadFloat(MessageReader r)
     {
@@ -1095,7 +1115,7 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
 
     /// <summary>Reads three coordinates into an array (READ_COORD_vec3 helper order).</summary>
     protected static float[] ReadCoordVec3(MessageReader r) =>
-        [ReadCoord(r), ReadCoord(r), ReadCoord(r)];
+        [ReadCoord32(r), ReadCoord32(r), ReadCoord32(r)];
 
     /// <summary>Reads three angles into an array (READ_ANGLE_vec3 helper order).</summary>
     protected static float[] ReadAngleVec3(MessageReader r) =>
