@@ -255,29 +255,7 @@ public partial class ConnectCommand : ICommand
         }
 
         if (gameHandler is SvenCoopMessageHandler scHandler)
-        {
-            scHandler.ScServerName += ev => console.Output.WriteLine($"[SC] ServerName: {ev.ServerName}");
-            scHandler.ScServerVersion += ev => console.Output.WriteLine($"[SC] ServerVer: {ev.Version}");
-            scHandler.ScServerBuild += ev => console.Output.WriteLine($"[SC] ServerBuild: {ev.Build}");
-            scHandler.ScNextMap += ev => console.Output.WriteLine($"[SC] NextMap: {ev.MapName}");
-            scHandler.ScMotd += ev => console.Output.WriteLine($"[SC] MOTD (final={ev.IsFinal}): {ev.Text}");
-            scHandler.ScTeamNames += ev => console.Output.WriteLine($"[SC] TeamNames: {ev.Teams.Length} teams");
-            scHandler.ScTeamScore += ev => console.Output.WriteLine($"[SC] TeamScore: {ev.TeamName} = {ev.Score}/{ev.Score2}");
-            scHandler.ScScoreInfo += ev => console.Output.WriteLine($"[SC] ScoreInfo: player={ev.PlayerIndex} score={ev.Score}");
-            scHandler.ScMapList += ev => console.Output.WriteLine(ev.IsClose
-                ? "[SC] MapList: close"
-                : ev.IsReset
-                    ? $"[SC] MapList: reset ({ev.TotalMaps} maps)"
-                    : $"[SC] MapList: update [{ev.StartIndex}..{ev.EndIndex}): {string.Join(", ", ev.MapNames)}");
-            scHandler.ScVoteMenu += ev => console.Output.WriteLine($"[SC] VoteMenu: id={ev.VoteId} \"{ev.Question}\" [{ev.YesLabel}] vs [{ev.NoLabel}]");
-            scHandler.ScClExtrasInfo += ev => console.Output.WriteLine($"[SC] ClExtrasInfo: plain={ev.PlainLength} iv={ev.Iv.Length} enc={ev.EncryptedData.Length} digest={ev.EncryptedDigest.Length}");
-            scHandler.ScClServerInfo += ev => console.Output.WriteLine($"[SC] ClServerInfo: flag={ev.Flag} num={ev.Value} key={ev.Key}");
-            scHandler.ScCdAudio += ev => console.Output.WriteLine($"[SC] CdAudio: track={ev.Track}");
-            scHandler.ScPlaylist += ev => console.Output.WriteLine($"[SC] Playlist: {ev.Playlist}");
-            scHandler.ScTimeEnd += ev => console.Output.WriteLine($"[SC] TimeEnd: {ev.Seconds}");
-            scHandler.ScOnTank += ev => console.Output.WriteLine($"[SC] OnTank: {ev.OnTank}");
-            scHandler.ScViewMode += ev => console.Output.WriteLine($"[SC] ViewMode: {(ev.ThirdPerson ? "thirdperson" : "firstperson")}");
-        }
+            SubscribeSvenCoopEvents(scHandler, console);
 
         using var exitRegistration = exitCts.Token.Register(() => userCts.Cancel());
         using var userRegistration = console.RegisterCancellationHandler().Register(() => userCts.Cancel());
@@ -385,6 +363,32 @@ public partial class ConnectCommand : ICommand
                 break;
             }
         }
+    }
+
+    /// <summary>Subscribes the Sven Co-op user-message events for console printing.</summary>
+    private static void SubscribeSvenCoopEvents(SvenCoopMessageHandler sc, IConsole console)
+    {
+        sc.ScServerName += ev => console.Output.WriteLine($"[SC] ServerName: {ev.ServerName}");
+        sc.ScServerVersion += ev => console.Output.WriteLine($"[SC] ServerVer: {ev.Version}");
+        sc.ScServerBuild += ev => console.Output.WriteLine($"[SC] ServerBuild: {ev.Build}");
+        sc.ScNextMap += ev => console.Output.WriteLine($"[SC] NextMap: {ev.MapName}");
+        sc.ScMotd += ev => console.Output.WriteLine($"[SC] MOTD (final={ev.IsFinal}): {ev.Text}");
+        sc.ScTeamNames += ev => console.Output.WriteLine($"[SC] TeamNames: {ev.Teams.Length} teams");
+        sc.ScTeamScore += ev => console.Output.WriteLine($"[SC] TeamScore: {ev.TeamName} = {ev.Score}/{ev.Score2}");
+        sc.ScScoreInfo += ev => console.Output.WriteLine($"[SC] ScoreInfo: player={ev.PlayerIndex} score={ev.Score}");
+        sc.ScMapList += ev => console.Output.WriteLine(ev.IsClose
+            ? "[SC] MapList: close"
+            : ev.IsReset
+                ? $"[SC] MapList: reset ({ev.TotalMaps} maps)"
+                : $"[SC] MapList: update [{ev.StartIndex}..{ev.EndIndex}): {string.Join(", ", ev.MapNames)}");
+        sc.ScVoteMenu += ev => console.Output.WriteLine($"[SC] VoteMenu: id={ev.VoteId} \"{ev.Question}\" [{ev.YesLabel}] vs [{ev.NoLabel}]");
+        sc.ScClExtrasInfo += ev => console.Output.WriteLine($"[SC] ClExtrasInfo: plain={ev.PlainLength} iv={ev.Iv.Length} enc={ev.EncryptedData.Length} digest={ev.EncryptedDigest.Length}");
+        sc.ScClServerInfo += ev => console.Output.WriteLine($"[SC] ClServerInfo: flag={ev.Flag} num={ev.Value} key={ev.Key}");
+        sc.ScCdAudio += ev => console.Output.WriteLine($"[SC] CdAudio: track={ev.Track}");
+        sc.ScPlaylist += ev => console.Output.WriteLine($"[SC] Playlist: {ev.Playlist}");
+        sc.ScTimeEnd += ev => console.Output.WriteLine($"[SC] TimeEnd: {ev.Seconds}");
+        sc.ScOnTank += ev => console.Output.WriteLine($"[SC] OnTank: {ev.OnTank}");
+        sc.ScViewMode += ev => console.Output.WriteLine($"[SC] ViewMode: {(ev.ThirdPerson ? "thirdperson" : "firstperson")}");
     }
 
     private static string RenderQrCode(string url)

@@ -19,13 +19,20 @@ namespace GoldsrcNetClient.Core.Game;
 /// here and raised as <c>Sc*</c> events: CurWeapon (byte,short,long,long), Health (long),
 /// Battery (byte), AmmoX/AmmoPickup (byte,long), WeapPickup (short), WeaponList
 /// (long ammo maxima), TextMsg (4 format params), HudText (single string), Concuss
-/// (3 floats), Fog (extended), GameTitle (no payload), ShowMenu, VGUIMenu, HideHUD (short).</para>
+/// (3 floats), Fog (extended), GameTitle (no payload), ShowMenu, VGUIMenu, HideHUD (short),
+/// Damage (Half-Life layout, 32-bit coords).</para>
+///
+/// <para>Sven coordinates are 32-bit on the wire (int32 × 1/8), unlike stock GoldSrc's
+/// 16-bit coords — use <see cref="ReadCoord32"/> in any parser added here. Verified
+/// live against the dedicated server's user-message registration sizes (Damage=18,
+/// Fog=24, WeatherFX=68, …).</para>
 ///
 /// <para>Messages handled inside VGUI panel virtuals are decoded through the panel
 /// classes' vtables: MapList (CMapVotePanel::vftable+0x21C) and VoteMenu
-/// (vtable+0x214). ClExtrasInfo frames a CryptoPP authenticated-encryption blob whose
-/// key is derived client-side by GenerateKey from the ClServerInfo handshake — only
-/// its wire framing can be decoded, and the opaque blocks are exposed as-is.</para>
+/// (CVotePopup::vftable+0x214). ClExtrasInfo frames a CryptoPP authenticated-encryption
+/// blob whose key is derived client-side by GenerateKey from the ClServerInfo
+/// handshake — only its wire framing can be decoded, and the opaque blocks are exposed
+/// as-is.</para>
 /// </remarks>
 public class SvenCoopMessageHandler : HalfLifeMessageHandler
 {
@@ -38,9 +45,6 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// <summary>Raised for the encrypted per-player authorisation update (framing only —
     /// the payload is CryptoPP AEAD sealed with a client-derived key).</summary>
     public event Action<ScClExtrasInfoEvent>? ScClExtrasInfo;
-    /// <summary>Raised for SC-specific messages with raw data when the structure cannot be decoded.</summary>
-    public event Action<RawUserMessage>? OnScSpecificMessage;
-
     /// <summary>Raised when a player's active weapon changes (Sven wire format).</summary>
     public event Action<ScCurWeaponEvent>? ScCurWeapon;
     /// <summary>Raised when health updates (32-bit).</summary>
@@ -173,6 +177,11 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     public event Action<SpectatorEvent>? Spectator;
     /// <summary>Raised when spectator mode is allowed/disallowed.</summary>
     public event Action<AllowSpecEvent>? AllowSpec;
+    /// <summary>Raised for SC-specific messages with raw data. Every message registered
+    /// by the 5.0.x game DLL has a typed parser here, so built-in dispatch no longer
+    /// raises this; it remains (with <see cref="ParseScRaw"/>) as an extension point for
+    /// derived handlers covering newer or custom registrations.</summary>
+    public event Action<RawUserMessage>? OnScSpecificMessage;
 
     #endregion
 
