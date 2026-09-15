@@ -1,5 +1,3 @@
-using GoldsrcNetClient.Core.Game;
-
 namespace GoldsrcNetClient.Tui.Models;
 
 public sealed class ServerConfig
@@ -9,8 +7,15 @@ public sealed class ServerConfig
     public int Port { get; set; } = 27015;
     public uint AppId { get; set; } = 70;
 
-    public string AppIdLabel =>
-        GameLoginProviders.GetByAppId(AppId)?.DisplayName ?? $"Unknown ({AppId})";
+    /// <summary>Human-readable game name for the configured AppId (falls back to the raw id).</summary>
+    public string AppIdLabel => AppId switch
+    {
+        10 => "Counter-Strike",
+        70 => "Half-Life",
+        80 => "Counter-Strike: Condition Zero",
+        225840 => "Sven Co-op",
+        _ => $"Unknown ({AppId})"
+    };
 
     public override string ToString() => $"{Name} ({Host}:{Port}) [{AppIdLabel}]";
 

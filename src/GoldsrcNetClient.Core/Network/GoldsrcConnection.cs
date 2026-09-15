@@ -1,3 +1,4 @@
+using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Messages;
@@ -55,7 +56,7 @@ public partial class GoldsrcConnection : IDisposable
     private readonly ITransport _transport;
     private readonly Dictionary<IPEndPoint, Session> _sessions = [];
     private readonly ISteamAuthProvider _authProvider;
-    private readonly IServerMessageHandler _messageHandler;
+    private readonly IGameProfile _profile;
     private readonly HandshakeNegotiator _handshake;
     private readonly IEngineVariant _variant;
     private readonly Func<ReadOnlyMemory<byte>, IPEndPoint, CancellationToken, Task> _sendPacket;
@@ -149,28 +150,24 @@ public partial class GoldsrcConnection : IDisposable
     /// </summary>
     /// <param name="logger">Optional logger; defaults to <see cref="NullLogger{GoldsrcConnection}"/>.</param>
     /// <param name="authProvider">Steam auth provider; defaults to <see cref="NoSteamAuthProvider"/> which sends a fake key.</param>
-    /// <param name="messageHandler">Optional legacy server message handler, called for each message before pipeline parsing.
-    /// Return <c>true</c> to consume the message. Game profiles replace this with parser registrations
-    /// (see <see cref="Game.IGameLoginProvider"/>); the hook exists for the transition period.</param>
-    /// <param name="engineVariant">Engine-branch wire dialect; defaults to the standard Valve branch.
-    /// Pass the profile's variant when connecting to a different branch
-    /// (e.g. <see cref="EngineVariants.SvenCoop"/>).</param>
+    /// <param name="profile">Game profile supplying the wire dialect, message parsers, and
+    /// session behavior. Defaults to the Half-Life profile.</param>
     /// <param name="localPort">Local UDP port to bind (0 = OS-assigned); ignored when <paramref name="transport"/> is supplied.</param>
     /// <param name="transport">UDP transport seam; defaults to a real socket. Tests inject a fake
     /// to drive the receive loop without network I/O.</param>
     public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null,
-        IServerMessageHandler? messageHandler = null, IEngineVariant? engineVariant = null, int localPort = 0,
-        ITransport? transport = null)
+        IGameProfile? profile = null, int localPort = 0, ITransport? transport = null)
     {
         Logger = logger ?? NullLogger<GoldsrcConnection>.Instance;
         _authProvider = authProvider ?? new NoSteamAuthProvider();
-        _messageHandler = messageHandler ?? new DefaultServerMessageHandler();
-        _variant = engineVariant ?? EngineVariants.Valve;
+        _profile = profile ?? new HalfLifeProfile();
+        _variant = _profile.EngineVariant;
         _transport = transport ?? new UdpTransport(localPort);
         _sendPacket = (buffer, target, token) => _transport.SendAsync(buffer, target, token);
         _handshake = new HandshakeNegotiator(_authProvider, Settings, _sendPacket, Logger);
-        _userInfo = new UserInfoString(Settings.DefaultUserInfo);
+        _userInfo = new UserInfoString(_profile.DefaultUserInfo);
         AttachProtocolBehaviors();
+        _profile.AttachSession(this);
     }
 
     /// <summary>
@@ -392,12 +389,8 @@ public partial class GoldsrcConnection : IDisposable
 
         var builder = new ParserRegistry.Builder();
         EngineMessageParsers.Register(builder, _variant, data);
-        var pipeline = new MessagePipeline(builder.Build(), new Game.UserMessageRegistry(), Messages, Logger)
-        {
-            // Legacy hook so game handler chains keep working until the
-            // profile-based message sets fully replace them.
-            Interceptor = (type, ref reader) => _messageHandler.HandleMessage(this, type, ref reader),
-        };
+        _profile.RegisterMessages(builder);
+        var pipeline = new MessagePipeline(builder.Build(), new Game.UserMessageRegistry(), Messages, Logger);
         return new Session
         {
             Handshake = handshake,

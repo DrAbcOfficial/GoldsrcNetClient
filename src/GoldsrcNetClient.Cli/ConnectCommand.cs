@@ -1,6 +1,7 @@
 using CliFx;
 using CliFx.Binding;
 using CliFx.Infrastructure;
+using GoldsrcNetClient.Core;
 using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Messages;
@@ -8,6 +9,7 @@ using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Messages.Engine;
+using GoldsrcNetClient.Core.Messages.Users;
 using GoldsrcNetClient.SteamProvider;
 using Microsoft.Extensions.Logging;
 using QRCoder;
@@ -70,10 +72,12 @@ public partial class ConnectCommand : ICommand
             return;
         }
 
-        // Resolve the game profile (drives message handling, userinfo, and the AppId
+        // Resolve the game profile (drives message parsing, userinfo, and the AppId
         // used for login) — this is the per-game extension point. An explicit --game
         // determines both profile and AppId; otherwise AppId picks the profile.
-        var profile = GameLoginProviders.Resolve(Game, AppId);
+        var profile = new GameProfileResolver(
+            [new HalfLifeProfile(), new CounterStrikeProfile(), new ConditionZeroProfile(), new SvenCoopProfile()])
+            .Resolve(Game, AppId);
         uint loginAppId = Game != null ? profile.AppId : AppId;
 
         console.Output.WriteLine($"Game profile: {profile.DisplayName} (id={profile.Id}, appid={loginAppId})");
@@ -130,15 +134,6 @@ public partial class ConnectCommand : ICommand
         console.Output.WriteLine($"Connecting to {Host}:{Port} (timeout: {TimeoutSeconds}s)...");
 
         var logger = new ConsoleLogger(console, Debug);
-        var gameHandler = profile.CreateMessageHandler();
-        if (gameHandler is GameMessageHandler gmh)
-        {
-            gmh.OnRawUserMessage += raw =>
-            {
-                if (Debug)
-                    console.Error.WriteLine($"[UserMsg] {raw.Name} ({raw.Data.Length} bytes) {raw.Data.AsSpan().ToHexPreview(24)}");
-            };
-        }
 
         var exitCts = new CancellationTokenSource();
         console.RegisterCancellationHandler().Register(() =>
@@ -150,7 +145,7 @@ public partial class ConnectCommand : ICommand
 
         while (!exitCts.IsCancellationRequested)
         {
-            await RunSessionAsync(console, logger, gameHandler, authProvider, loginAppId, profile, exitCts);
+            await RunSessionAsync(console, logger, authProvider, loginAppId, profile, exitCts);
 
             if (ReconnectDelaySeconds <= 0 || exitCts.IsCancellationRequested)
                 break;
@@ -175,17 +170,13 @@ public partial class ConnectCommand : ICommand
     private async Task RunSessionAsync(
         IConsole console,
         ILogger<GoldsrcConnection> logger,
-        IServerMessageHandler gameHandler,
         ISteamAuthProvider? authProvider,
         uint loginAppId,
-        IGameLoginProvider profile,
+        IGameProfile profile,
         CancellationTokenSource exitCts)
     {
         var userCts = new CancellationTokenSource();
-        if (gameHandler is GameMessageHandler chain)
-            chain.Reset(); // fresh user-message registry per session (map changes reconnect)
-
-        using var connection = new GoldsrcConnection(logger, authProvider, gameHandler, profile.EngineVariant);
+        using var connection = new GoldsrcConnection(logger, authProvider, profile);
         connection.UserInfo = profile.DefaultUserInfo;
 
         if (!string.IsNullOrEmpty(PlayerName))
@@ -231,26 +222,32 @@ public partial class ConnectCommand : ICommand
         if (Debug)
             connection.Messages.SubscribeAll(m => Emit("message", new { type = m.GetType().Name }, console));
 
-        if (gameHandler is HalfLifeMessageHandler hlHandler)
+        // Typed message subscriptions replace the old per-handler events: the CLI
+        // reacts to the message types it cares about, whatever the game profile.
+        connection.Subscribe<SayTextMessage>(m => console.Output.WriteLine($"[Chat] {m.Message.TrimEnd('\n')}"));
+        connection.Subscribe<TextMsgMessage>(m =>
         {
-            hlHandler.SayText += ev => console.Output.WriteLine($"[Chat] {ev.Message.TrimEnd('\n')}");
-            hlHandler.TextMsg += ev =>
+            var dest = m.MsgDest switch
             {
-                var dest = ev.MsgDest switch
-                {
-                    1 => "console",
-                    2 => "chat",
-                    3 => "center",
-                    4 => "centernostay",
-                    _ => $"?{ev.MsgDest}"
-                };
-                console.Output.WriteLine($"[TextMsg] ({dest}) {ev.Message}");
+                1 => "console",
+                2 => "chat",
+                3 => "center",
+                4 => "centernostay",
+                _ => $"?{m.MsgDest}"
             };
-            hlHandler.DeathMsg += ev => console.Output.WriteLine($"[DeathMsg] killer={ev.KillerId} victim={ev.VictimId} weapon=\"{ev.WeaponName}\"");
+            console.Output.WriteLine($"[TextMsg] ({dest}) {m.Message}");
+        });
+        connection.Subscribe<DeathMsgMessage>(m =>
+            console.Output.WriteLine($"[DeathMsg] killer={m.KillerId} victim={m.VictimId} weapon=\"{m.WeaponName}\""));
+        connection.Subscribe<ScTextMsgMessage>(m => console.Output.WriteLine($"[SC TextMsg] ({m.MsgDest}) {m.Message}"));
+        SubscribeSvenCoopMessages(connection, console);
+        if (Debug)
+        {
+            connection.Subscribe<NewUserMsgMessage>(m =>
+                console.Output.WriteLine($"[UserMsgReg] {m.Index} (0x{m.Index:X2}) -> {m.Name} (size={m.DeclaredSize})"));
+            connection.Messages.Subscribe<RawUserMessage>(m =>
+                console.Error.WriteLine($"[UserMsg] {m.Name} ({m.Data.Length} bytes) {m.Data.AsSpan().ToHexPreview(24)}"));
         }
-
-        if (gameHandler is SvenCoopMessageHandler scHandler)
-            SubscribeSvenCoopEvents(scHandler, console);
 
         using var exitRegistration = exitCts.Token.Register(() => userCts.Cancel());
         using var userRegistration = console.RegisterCancellationHandler().Register(() => userCts.Cancel());
@@ -283,19 +280,7 @@ public partial class ConnectCommand : ICommand
             }
 
             if (connected)
-            {
-                if (Debug && gameHandler is GameMessageHandler debugGmh)
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(5000);
-                        foreach (var (idx, msgName, msgSize) in debugGmh.Registry.Entries)
-                            console.Output.WriteLine($"[UserMsgReg] {idx} (0x{idx:X2}) -> {msgName} (size={msgSize})");
-                    });
-                }
-
                 RunInputShell(console, connection, userCts);
-            }
         }
         catch (OperationCanceledException) when (!userCts.IsCancellationRequested)
         {
@@ -360,30 +345,30 @@ public partial class ConnectCommand : ICommand
         }
     }
 
-    /// <summary>Subscribes the Sven Co-op user-message events for console printing.</summary>
-    private static void SubscribeSvenCoopEvents(SvenCoopMessageHandler sc, IConsole console)
+    /// <summary>Subscribes the Sven Co-op message types the CLI prints.</summary>
+    private static void SubscribeSvenCoopMessages(GoldsrcConnection connection, IConsole console)
     {
-        sc.ScServerName += ev => console.Output.WriteLine($"[SC] ServerName: {ev.ServerName}");
-        sc.ScServerVersion += ev => console.Output.WriteLine($"[SC] ServerVer: {ev.Version}");
-        sc.ScServerBuild += ev => console.Output.WriteLine($"[SC] ServerBuild: {ev.Build}");
-        sc.ScNextMap += ev => console.Output.WriteLine($"[SC] NextMap: {ev.MapName}");
-        sc.ScMotd += ev => console.Output.WriteLine($"[SC] MOTD (final={ev.IsFinal}): {ev.Text}");
-        sc.ScTeamNames += ev => console.Output.WriteLine($"[SC] TeamNames: {ev.Teams.Length} teams");
-        sc.ScTeamScore += ev => console.Output.WriteLine($"[SC] TeamScore: {ev.TeamName} = {ev.Score}/{ev.Score2}");
-        sc.ScScoreInfo += ev => console.Output.WriteLine($"[SC] ScoreInfo: player={ev.PlayerIndex} score={ev.Score}");
-        sc.ScMapList += ev => console.Output.WriteLine(ev.IsClose
+        connection.Subscribe<ScServerNameMessage>(m => console.Output.WriteLine($"[SC] ServerName: {m.ServerName}"));
+        connection.Subscribe<ScServerVersionMessage>(m => console.Output.WriteLine($"[SC] ServerVer: {m.Version}"));
+        connection.Subscribe<ScServerBuildMessage>(m => console.Output.WriteLine($"[SC] ServerBuild: {m.Build}"));
+        connection.Subscribe<ScNextMapMessage>(m => console.Output.WriteLine($"[SC] NextMap: {m.MapName}"));
+        connection.Subscribe<ScMotdMessage>(m => console.Output.WriteLine($"[SC] MOTD (final={m.IsFinal}): {m.Text}"));
+        connection.Subscribe<ScTeamNamesMessage>(m => console.Output.WriteLine($"[SC] TeamNames: {m.Teams.Length} teams"));
+        connection.Subscribe<ScTeamScoreMessage>(m => console.Output.WriteLine($"[SC] TeamScore: {m.TeamName} = {m.Score}/{m.Score2}"));
+        connection.Subscribe<ScScoreInfoMessage>(m => console.Output.WriteLine($"[SC] ScoreInfo: player={m.PlayerIndex} score={m.Score}"));
+        connection.Subscribe<ScMapListMessage>(m => console.Output.WriteLine(m.IsClose
             ? "[SC] MapList: close"
-            : ev.IsReset
-                ? $"[SC] MapList: reset ({ev.TotalMaps} maps)"
-                : $"[SC] MapList: update [{ev.StartIndex}..{ev.EndIndex}): {string.Join(", ", ev.MapNames)}");
-        sc.ScVoteMenu += ev => console.Output.WriteLine($"[SC] VoteMenu: id={ev.VoteId} \"{ev.Question}\" [{ev.YesLabel}] vs [{ev.NoLabel}]");
-        sc.ScClExtrasInfo += ev => console.Output.WriteLine($"[SC] ClExtrasInfo: plain={ev.PlainLength} iv={ev.Iv.Length} enc={ev.EncryptedData.Length} digest={ev.EncryptedDigest.Length}");
-        sc.ScClServerInfo += ev => console.Output.WriteLine($"[SC] ClServerInfo: flag={ev.Flag} num={ev.Value} key={ev.Key}");
-        sc.ScCdAudio += ev => console.Output.WriteLine($"[SC] CdAudio: track={ev.Track}");
-        sc.ScPlaylist += ev => console.Output.WriteLine($"[SC] Playlist: {ev.Playlist}");
-        sc.ScTimeEnd += ev => console.Output.WriteLine($"[SC] TimeEnd: {ev.Seconds}");
-        sc.ScOnTank += ev => console.Output.WriteLine($"[SC] OnTank: {ev.OnTank}");
-        sc.ScViewMode += ev => console.Output.WriteLine($"[SC] ViewMode: {(ev.ThirdPerson ? "thirdperson" : "firstperson")}");
+            : m.IsReset
+                ? $"[SC] MapList: reset ({m.TotalMaps} maps)"
+                : $"[SC] MapList: update [{m.StartIndex}..{m.EndIndex}): {string.Join(", ", m.MapNames)}"));
+        connection.Subscribe<ScVoteMenuMessage>(m => console.Output.WriteLine($"[SC] VoteMenu: id={m.VoteId} \"{m.Question}\" [{m.YesLabel}] vs [{m.NoLabel}]"));
+        connection.Subscribe<ScClExtrasInfoMessage>(m => console.Output.WriteLine($"[SC] ClExtrasInfo: plain={m.PlainLength} iv={m.Iv.Length} enc={m.EncryptedData.Length} digest={m.EncryptedDigest.Length}"));
+        connection.Subscribe<ScClServerInfoMessage>(m => console.Output.WriteLine($"[SC] ClServerInfo: flag={m.Flag} num={m.Value} key={m.Key}"));
+        connection.Subscribe<ScCdAudioMessage>(m => console.Output.WriteLine($"[SC] CdAudio: track={m.Track}"));
+        connection.Subscribe<ScPlaylistMessage>(m => console.Output.WriteLine($"[SC] Playlist: {m.Playlist}"));
+        connection.Subscribe<ScTimeEndMessage>(m => console.Output.WriteLine($"[SC] TimeEnd: {m.Seconds}"));
+        connection.Subscribe<ScOnTankMessage>(m => console.Output.WriteLine($"[SC] OnTank: {m.OnTank}"));
+        connection.Subscribe<ScViewModeMessage>(m => console.Output.WriteLine($"[SC] ViewMode: {(m.ThirdPerson ? "thirdperson" : "firstperson")}"));
     }
 
     private static string RenderQrCode(string url)

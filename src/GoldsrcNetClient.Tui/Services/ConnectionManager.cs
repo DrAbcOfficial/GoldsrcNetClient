@@ -1,5 +1,6 @@
 using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Messages.Users;
 using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Messages.Engine;
 using GoldsrcNetClient.Core.Network;
@@ -24,7 +25,7 @@ public enum ConnectionState
 public sealed class ConnectionManager : IDisposable
 {
     private GoldsrcConnection? _connection;
-    private HalfLifeMessageHandler? _gameHandler;    private CancellationTokenSource? _cts;
+    private CancellationTokenSource? _cts;
     private ISteamAuthProvider? _authProvider;
     private Task? _connectTask;
     private volatile ConnectionState _state = ConnectionState.Disconnected;
@@ -55,30 +56,24 @@ public sealed class ConnectionManager : IDisposable
         _cts = new CancellationTokenSource();
         SetState(ConnectionState.Connecting);
 
-        // The game profile drives message handling, the engine-variant wire
+        // The game profile drives message parsing, the engine-variant wire
         // dialect, and the AppId used for login — the per-game extension point.
-        IGameLoginProvider profile = GameLoginProviders.GetByAppId(config.AppId) ?? GameLoginProviders.Resolve(null, config.AppId);
-        IServerMessageHandler gameHandler = profile.CreateMessageHandler();
-        _gameHandler = gameHandler as HalfLifeMessageHandler;
-
-        if (_gameHandler is { } hlHandler)
-        {
-            hlHandler.SayText += ev => Emit($"[Say] Player #{ev.SenderId}: {ev.Message}");
-            hlHandler.TextMsg += ev => Emit($"[TextMsg] {ev.Message}");
-            hlHandler.HudText += ev => Emit($"[HudText] {ev.TextCode}");
-
-            if (hlHandler is CounterStrikeMessageHandler cs)
-            {
-                cs.HudTextArgs += ev => Emit($"[HudTextArgs] {ev.TextCode}: {string.Join(", ", ev.Args)}");
-                cs.HudTextPro += ev => Emit($"[HudTextPro] {ev.TextCode}");
-            }
-        }
+        IGameProfile profile = new GameProfileResolver(
+            [new HalfLifeProfile(), new CounterStrikeProfile(), new ConditionZeroProfile(), new SvenCoopProfile()])
+            .Resolve(null, config.AppId);
 
         var logger = new GlobalLogger<GoldsrcConnection>();
         var resolvedProvider = _authProvider ?? new NoSteamAuthProvider();
         Emit($"Auth: {resolvedProvider.GetType().Name} (IsAvailable={resolvedProvider.IsAvailable})");
-        _connection = new GoldsrcConnection(logger, resolvedProvider, gameHandler, profile.EngineVariant);
+        _connection = new GoldsrcConnection(logger, resolvedProvider, profile);
         _connection.UserInfo = userInfo;
+
+        // Typed message subscriptions replace the old per-handler events.
+        _connection.Subscribe<SayTextMessage>(m => Emit($"[Say] Player #{m.SenderId}: {m.Message}"));
+        _connection.Subscribe<TextMsgMessage>(m => Emit($"[TextMsg] {m.Message}"));
+        _connection.Subscribe<HudTextMessage>(m => Emit($"[HudText] {m.TextCode}"));
+        _connection.Subscribe<HudTextArgsMessage>(m => Emit($"[HudTextArgs] {m.TextCode}: {string.Join(", ", m.Args)}"));
+        _connection.Subscribe<HudTextProMessage>(m => Emit($"[HudTextPro] {m.TextCode}"));
 
         // Console output, center prints, and server-initiated disconnects are handled
         // by the built-in Core processing and surfaced here as typed messages.
@@ -157,7 +152,6 @@ public sealed class ConnectionManager : IDisposable
 
         _connection?.Dispose();
         _connection = null;
-        _gameHandler = null;
         _currentConfig = null;
         SetState(ConnectionState.Disconnected);
     }
