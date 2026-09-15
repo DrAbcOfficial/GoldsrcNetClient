@@ -35,7 +35,9 @@ namespace GoldsrcNetClient.Core.Network;
 /// </remarks>
 public partial class GoldsrcConnection : IDisposable
 {
-    /// <summary>Per-endpoint session: session data, sequenced channel, signon state machine, and handshake state.</summary>
+    /// <summary>The connection's session: session data, sequenced channel, signon
+    /// state machine, and handshake state. One connection instance serves one
+    /// server endpoint; connect additional servers through additional connections.</summary>
     private sealed class Session
     {
         public required HandshakeState Handshake { get; init; }
@@ -51,10 +53,8 @@ public partial class GoldsrcConnection : IDisposable
         public Protocol.SessionState State = Protocol.SessionState.GetChallenge;
     }
 
-    private static readonly IPEndPoint DummyEndpoint = new(0, 0);
-
     private readonly ITransport _transport;
-    private readonly Dictionary<IPEndPoint, Session> _sessions = [];
+    private Session? _session;
     private readonly ISteamAuthProvider _authProvider;
     private readonly IGameProfile _profile;
     private readonly HandshakeNegotiator _handshake;
@@ -63,7 +63,6 @@ public partial class GoldsrcConnection : IDisposable
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private CancellationTokenSource? _keepAliveCts;
 
-    private IPEndPoint? _activeEndpoint;
     private UserInfoString _userInfo;
     private readonly SplitPacketReassembler _splitReassembler = new();
     private FileStream? _messageDumpStream;
@@ -225,6 +224,8 @@ public partial class GoldsrcConnection : IDisposable
     /// Resolves the hostname and begins the connection handshake.
     /// This method blocks until the <paramref name="ct"/> cancellation token is triggered.
     /// Use <see cref="Connected"/> to await handshake completion.
+    /// Call once per connection instance; to reach another server, create another
+    /// connection through the factory.
     /// </summary>
     /// <param name="appId">Server appId.</param>
     /// <param name="host">Server hostname or IP address.</param>
@@ -237,11 +238,10 @@ public partial class GoldsrcConnection : IDisposable
         var addresses = await Dns.GetHostAddressesAsync(host, ct);
         var ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork) ?? addresses[0];
         var ep = new IPEndPoint(ip, port);
-        _activeEndpoint = ep;
         Logger.LogDebug($"[DNS] resolved {host} -> {ep}");
 
         var session = CreateSession(ep);
-        _sessions[ep] = session;
+        _session = session;
 
         Logger.LogDebug($"[State] Begin -> GetChallenge. Sending getchallenge (steam={_authProvider.IsAvailable}, authProto={_authProvider.GetAuthProtocol()})");
         await _transport.SendAsync(_handshake.BuildGetChallengePacket(_authProvider.IsAvailable), ep, ct);

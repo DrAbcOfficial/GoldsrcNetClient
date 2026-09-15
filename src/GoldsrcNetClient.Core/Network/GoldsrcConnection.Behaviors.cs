@@ -15,9 +15,8 @@ namespace GoldsrcNetClient.Core.Network;
 /// </summary>
 public partial class GoldsrcConnection
 {
-    /// <summary>Session of the most recent <see cref="ConnectAsync"/> target, if any.</summary>
-    private Session? ActiveSession
-        => _sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session) ? session : null;
+    /// <summary>Session of this connection, if <see cref="GoldsrcConnection.ConnectAsync"/> has built one.</summary>
+    private Session? ActiveSession => _session;
 
     /// <summary>
     /// Raw bit-packed payload of the most recent <c>svc_resourcelist</c> from the server
