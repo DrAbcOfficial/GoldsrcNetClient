@@ -6,6 +6,7 @@ using GoldsrcNetClient.Core.Messages.Users;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using Microsoft.Extensions.DependencyInjection;
+using System.Net;
 
 namespace GoldsrcNetClient.Test;
 
@@ -112,5 +113,51 @@ public class DependencyInjectionTests
         using var provider = services.BuildServiceProvider();
 
         Assert.Throws<InvalidOperationException>(() => provider.GetRequiredService<IGameProfileResolver>());
+    }
+
+    [Fact]
+    public void AddGoldsrcClient_RegistersDefaultTransportFactory()
+    {
+        var services = new ServiceCollection();
+        services.AddGoldsrcClient();
+        using var provider = services.BuildServiceProvider();
+
+        var transportFactory = provider.GetRequiredService<Func<ITransport>>();
+        using var transport = transportFactory();
+        Assert.IsType<UdpTransport>(transport);
+    }
+
+    [Fact]
+    public void Factory_CreatesDistinctTransportPerConnection()
+    {
+        var created = new List<ITransport>();
+        var services = new ServiceCollection();
+        services.AddGoldsrcClient();
+        services.AddSingleton<Func<ITransport>>(() =>
+        {
+            var transport = new CountingTransport();
+            created.Add(transport);
+            return transport;
+        });
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IGoldsrcConnectionFactory>();
+
+        using var first = factory.Create();
+        using var second = factory.Create();
+
+        Assert.Equal(2, created.Count);
+        Assert.NotSame(created[0], created[1]);
+    }
+
+    /// <summary>Minimal transport fake: records nothing, never receives.</summary>
+    private sealed class CountingTransport : ITransport
+    {
+        public Task SendAsync(ReadOnlyMemory<byte> buffer, IPEndPoint target, CancellationToken ct)
+            => Task.CompletedTask;
+
+        public Task<(byte[] Buffer, IPEndPoint RemoteEndPoint)> ReceiveAsync(CancellationToken ct)
+            => Task.FromResult((Array.Empty<byte>(), new IPEndPoint(IPAddress.Loopback, 0)));
+
+        public void Dispose() { }
     }
 }

@@ -47,6 +47,10 @@ public static class GoldsrcServiceCollectionExtensions
         services.AddSingleton<IGameProfileResolver>(sp =>
             new GameProfileResolver(sp.GetServices<IGameProfile>()));
         services.AddSingleton<IGoldsrcConnectionFactory, GoldsrcConnectionFactory>();
+        // One fresh transport per created connection. Resolving ITransport as a
+        // (singleton) service would multiplex every connection over one socket.
+        // Register a replacement Func<ITransport> to override the default.
+        services.AddSingleton<Func<ITransport>>(() => new Network.UdpTransport(options.LocalPort));
         return services;
     }
 

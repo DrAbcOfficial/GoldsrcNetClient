@@ -7,6 +7,11 @@ namespace GoldsrcNetClient.Core.Network;
 /// The UDP transport seam: everything the connection needs from a socket.
 /// The default implementation wraps <see cref="System.Net.Sockets.UdpClient"/>;
 /// tests substitute a fake to drive the receive loop without network I/O.
+/// In dependency injection, register a <c>Func&lt;ITransport&gt;</c> so every
+/// created connection gets its own instance — a transport shared across
+/// connections would multiplex them over one socket (and one bound port).
+/// <see cref="GoldsrcServiceCollectionExtensions.AddGoldsrcClient"/> registers
+/// the default factory over <see cref="UdpTransport"/>.
 /// </summary>
 public interface ITransport : IDisposable
 {

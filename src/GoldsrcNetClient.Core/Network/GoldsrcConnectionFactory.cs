@@ -9,7 +9,7 @@ namespace GoldsrcNetClient.Core.Network;
 /// <summary>
 /// Creates configured <see cref="GoldsrcConnection"/> instances. Resolve it from
 /// dependency injection so the container supplies the logger, auth provider, and
-/// transport; connections themselves are short-lived and must be disposed.
+/// transport factory; connections themselves are short-lived and must be disposed.
 /// </summary>
 public interface IGoldsrcConnectionFactory
 {
@@ -19,7 +19,8 @@ public interface IGoldsrcConnectionFactory
     /// </summary>
     /// <param name="profile">Game profile; defaults to the container's fallback (Half-Life).</param>
     /// <param name="authProvider">Steam auth provider; defaults to the container's, then a no-steam stub.</param>
-    /// <param name="transport">UDP transport; defaults to the container's, then a real socket.</param>
+    /// <param name="transport">UDP transport; defaults to one instance from the container's
+    /// <c>Func&lt;ITransport&gt;</c> factory, then a real socket.</param>
     GoldsrcConnection Create(IGameProfile? profile = null, ISteamAuthProvider? authProvider = null, ITransport? transport = null);
 }
 
@@ -34,7 +35,7 @@ public sealed class GoldsrcConnectionFactory(
     private readonly ILogger<GoldsrcConnection> _logger =
         services.GetService<ILogger<GoldsrcConnection>>() ?? NullLogger<GoldsrcConnection>.Instance;
     private readonly ISteamAuthProvider? _authProvider = services.GetService<ISteamAuthProvider>();
-    private readonly ITransport? _transport = services.GetService<ITransport>();
+    private readonly Func<ITransport>? _transportFactory = services.GetService<Func<ITransport>>();
 
     /// <inheritdoc />
     public GoldsrcConnection Create(
@@ -47,7 +48,7 @@ public sealed class GoldsrcConnectionFactory(
             authProvider ?? _authProvider,
             profile ?? _resolver.Resolve(null, null),
             _options.LocalPort,
-            transport ?? _transport);
+            transport ?? _transportFactory?.Invoke());
         if (_options.MessageDumpPath is not null)
             connection.Settings.MessageDumpPath = _options.MessageDumpPath;
         return connection;
