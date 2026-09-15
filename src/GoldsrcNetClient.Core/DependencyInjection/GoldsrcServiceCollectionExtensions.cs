@@ -38,10 +38,8 @@ public static class GoldsrcServiceCollectionExtensions
 
         if (options.IncludeBuiltInProfiles)
         {
-            services.AddSingleton<IGameProfile, HalfLifeProfile>();
-            services.AddSingleton<IGameProfile, CounterStrikeProfile>();
-            services.AddSingleton<IGameProfile, ConditionZeroProfile>();
-            services.AddSingleton<IGameProfile, SvenCoopProfile>();
+            foreach (var profile in Game.GoldsrcProfiles.BuiltIn)
+                services.AddSingleton(profile);
         }
 
         services.AddSingleton<IGameProfileResolver>(sp =>

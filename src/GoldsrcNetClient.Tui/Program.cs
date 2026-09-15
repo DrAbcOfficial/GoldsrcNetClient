@@ -29,14 +29,11 @@ public static class Program
         UserInfoStore userInfoStore = new();
         userInfoStore.Load();
 
-        // Composition root for the TUI: register the client library and profiles,
-        // then resolve the connection manager's dependencies from the container.
+        // Composition root for the TUI: register the client library, then resolve
+        // the connection manager's dependencies from the container. AddGoldsrcClient
+        // registers the built-in profiles.
         using ServiceProvider provider = new ServiceCollection()
             .AddGoldsrcClient()
-            .AddGameProfile<HalfLifeProfile>()
-            .AddGameProfile<CounterStrikeProfile>()
-            .AddGameProfile<ConditionZeroProfile>()
-            .AddGameProfile<SvenCoopProfile>()
             .BuildServiceProvider();
 
         ConnectionManager connManager = new(

@@ -74,14 +74,10 @@ public partial class ConnectCommand : ICommand
         }
 
         // Composition root: the CLI owns a ServiceProvider and resolves the game
-        // profile and connection factory from it. Registering more profiles (mods)
-        // is a one-line addition here.
+        // profile and connection factory from it. AddGoldsrcClient registers the
+        // built-in profiles; registering more (mods) is a one-line addition here.
         using var provider = new ServiceCollection()
             .AddGoldsrcClient()
-            .AddGameProfile<HalfLifeProfile>()
-            .AddGameProfile<CounterStrikeProfile>()
-            .AddGameProfile<ConditionZeroProfile>()
-            .AddGameProfile<SvenCoopProfile>()
             .BuildServiceProvider();
 
         // Resolve the game profile (drives message parsing, userinfo, and the AppId

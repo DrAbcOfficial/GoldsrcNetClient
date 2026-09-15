@@ -35,8 +35,7 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>Creates the manager with the built-in profile set (for hosts without a container).</summary>
-    public ConnectionManager() : this(new GameProfileResolver(
-        [new HalfLifeProfile(), new CounterStrikeProfile(), new ConditionZeroProfile(), new SvenCoopProfile()]))
+    public ConnectionManager() : this(new GameProfileResolver(GoldsrcProfiles.BuiltIn))
     {
     }
 
