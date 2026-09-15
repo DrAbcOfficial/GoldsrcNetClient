@@ -11,6 +11,7 @@ using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Messages.Engine;
 using GoldsrcNetClient.Core.Messages.Users;
 using GoldsrcNetClient.SteamProvider;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using QRCoder;
 using System.Text.Json;
@@ -72,12 +73,21 @@ public partial class ConnectCommand : ICommand
             return;
         }
 
+        // Composition root: the CLI owns a ServiceProvider and resolves the game
+        // profile and connection factory from it. Registering more profiles (mods)
+        // is a one-line addition here.
+        using var provider = new ServiceCollection()
+            .AddGoldsrcClient()
+            .AddGameProfile<HalfLifeProfile>()
+            .AddGameProfile<CounterStrikeProfile>()
+            .AddGameProfile<ConditionZeroProfile>()
+            .AddGameProfile<SvenCoopProfile>()
+            .BuildServiceProvider();
+
         // Resolve the game profile (drives message parsing, userinfo, and the AppId
         // used for login) — this is the per-game extension point. An explicit --game
         // determines both profile and AppId; otherwise AppId picks the profile.
-        var profile = new GameProfileResolver(
-            [new HalfLifeProfile(), new CounterStrikeProfile(), new ConditionZeroProfile(), new SvenCoopProfile()])
-            .Resolve(Game, AppId);
+        var profile = provider.GetRequiredService<IGameProfileResolver>().Resolve(Game, AppId);
         uint loginAppId = Game != null ? profile.AppId : AppId;
 
         console.Output.WriteLine($"Game profile: {profile.DisplayName} (id={profile.Id}, appid={loginAppId})");
@@ -145,7 +155,7 @@ public partial class ConnectCommand : ICommand
 
         while (!exitCts.IsCancellationRequested)
         {
-            await RunSessionAsync(console, logger, authProvider, loginAppId, profile, exitCts);
+            await RunSessionAsync(console, logger, provider.GetRequiredService<IGoldsrcConnectionFactory>(), authProvider, loginAppId, profile, exitCts);
 
             if (ReconnectDelaySeconds <= 0 || exitCts.IsCancellationRequested)
                 break;
@@ -170,13 +180,14 @@ public partial class ConnectCommand : ICommand
     private async Task RunSessionAsync(
         IConsole console,
         ILogger<GoldsrcConnection> logger,
+        IGoldsrcConnectionFactory factory,
         ISteamAuthProvider? authProvider,
         uint loginAppId,
         IGameProfile profile,
         CancellationTokenSource exitCts)
     {
         var userCts = new CancellationTokenSource();
-        using var connection = new GoldsrcConnection(logger, authProvider, profile);
+        using var connection = factory.Create(profile, authProvider);
         connection.UserInfo = profile.DefaultUserInfo;
 
         if (!string.IsNullOrEmpty(PlayerName))

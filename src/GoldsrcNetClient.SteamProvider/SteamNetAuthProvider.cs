@@ -6,14 +6,14 @@ namespace GoldsrcNetClient.SteamProvider;
 /// Steam authentication provider using Facepunch Steamworks.NET.
 /// Requires the Steam client to be running and the user to own the specified AppId.
 /// </summary>
-public sealed class SteamNetAuthProvider : SteamBaseAuthProvider
+public sealed class SteamNetAuthProvider : SteamAuthProviderBase
 {
     private readonly uint _appId = 70;
     private byte[] _ticketData = [];
     private bool _initialized;
 
     /// <summary>Whether the Steam provider initialized successfully.</summary>
-    public override bool IsAvailable { get; set; } = true;
+    public bool IsInitialized => IsAvailable;
 
     /// <summary>The last error message if initialization or auth failed.</summary>
     public string? LastError { get; private set; }
@@ -60,16 +60,9 @@ public sealed class SteamNetAuthProvider : SteamBaseAuthProvider
     }
 
     /// <inheritdoc />
-    public override byte GetAuthProtocol() => 3;
-
-    /// <inheritdoc />
-    public override string GetRawAuthData()
-    {
-        if (_ticketData.Length > 0)
-            return Convert.ToHexString(_ticketData).ToLowerInvariant();
-
-        return "steam";
-    }
+    public override string GetRawAuthData() => _ticketData.Length > 0
+        ? Convert.ToHexString(_ticketData).ToLowerInvariant()
+        : PlaceholderAuthData;
 
     /// <inheritdoc />
     public override byte[] GetRawAuthBytes()

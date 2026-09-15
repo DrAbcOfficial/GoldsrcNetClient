@@ -10,7 +10,7 @@ namespace GoldsrcNetClient.SteamProvider;
 /// Steam authentication provider using SteamKit2 (pure managed, no native Steam client required).
 /// Supports QR code-based login via the Steam mobile app.
 /// </summary>
-public sealed class SteamKitAuthProvider : SteamBaseAuthProvider
+public sealed class SteamKitAuthProvider : SteamAuthProviderBase
 {
     private readonly SteamClient _client;
     private readonly SteamUser _steamUser;
@@ -26,8 +26,8 @@ public sealed class SteamKitAuthProvider : SteamBaseAuthProvider
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<EResult> _logonTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    /// <inheritdoc />
-    public override bool IsAvailable { get => _isLoggedOn; set => _isLoggedOn = value; }
+    /// <summary>Whether the QR login completed and game tickets are available.</summary>
+    public bool IsLoggedOn => _isLoggedOn;
 
     /// <summary>The last error message if login or auth failed.</summary>
     public string? LastError { get; private set; }
@@ -50,23 +50,14 @@ public sealed class SteamKitAuthProvider : SteamBaseAuthProvider
     }
 
     /// <inheritdoc />
-    public override byte GetAuthProtocol() => 3;
+    public override string GetRawAuthData() => !_isLoggedOn
+        ? PlaceholderAuthData
+        : Convert.ToHexString(_ticketData ?? []);
 
     /// <inheritdoc />
-    public override string GetRawAuthData()
-    {
-        if (!_isLoggedOn)
-            return "steam";
-        return Convert.ToHexString(_ticketData ?? []);
-    }
-
-    /// <inheritdoc />
-    public override byte[] GetRawAuthBytes()
-    {
-        if (!_isLoggedOn)
-            return System.Text.Encoding.UTF8.GetBytes("steam");
-        return _ticketData ?? [];
-    }
+    public override byte[] GetRawAuthBytes() => !_isLoggedOn
+        ? System.Text.Encoding.UTF8.GetBytes(PlaceholderAuthData)
+        : _ticketData ?? [];
 
     /// <inheritdoc />
     public override byte[] GetGameAuthBytes(uint appId, ulong serverSteamId, uint serverIp, ushort serverPort, bool vac2Secure)

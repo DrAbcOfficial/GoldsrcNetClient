@@ -24,6 +24,22 @@ public enum ConnectionState
 /// </summary>
 public sealed class ConnectionManager : IDisposable
 {
+    private readonly IGameProfileResolver _profiles;
+    private readonly IGoldsrcConnectionFactory? _factory;
+
+    /// <summary>Creates the manager over an injected profile resolver and connection factory.</summary>
+    public ConnectionManager(IGameProfileResolver profiles, IGoldsrcConnectionFactory? factory = null)
+    {
+        _profiles = profiles;
+        _factory = factory;
+    }
+
+    /// <summary>Creates the manager with the built-in profile set (for hosts without a container).</summary>
+    public ConnectionManager() : this(new GameProfileResolver(
+        [new HalfLifeProfile(), new CounterStrikeProfile(), new ConditionZeroProfile(), new SvenCoopProfile()]))
+    {
+    }
+
     private GoldsrcConnection? _connection;
     private CancellationTokenSource? _cts;
     private ISteamAuthProvider? _authProvider;
@@ -58,14 +74,12 @@ public sealed class ConnectionManager : IDisposable
 
         // The game profile drives message parsing, the engine-variant wire
         // dialect, and the AppId used for login — the per-game extension point.
-        IGameProfile profile = new GameProfileResolver(
-            [new HalfLifeProfile(), new CounterStrikeProfile(), new ConditionZeroProfile(), new SvenCoopProfile()])
-            .Resolve(null, config.AppId);
+        IGameProfile profile = _profiles.Resolve(null, config.AppId);
 
-        var logger = new GlobalLogger<GoldsrcConnection>();
         var resolvedProvider = _authProvider ?? new NoSteamAuthProvider();
         Emit($"Auth: {resolvedProvider.GetType().Name} (IsAvailable={resolvedProvider.IsAvailable})");
-        _connection = new GoldsrcConnection(logger, resolvedProvider, profile);
+        _connection = _factory?.Create(profile, resolvedProvider)
+            ?? new GoldsrcConnection(new GlobalLogger<GoldsrcConnection>(), resolvedProvider, profile);
         _connection.UserInfo = userInfo;
 
         // Typed message subscriptions replace the old per-handler events.
