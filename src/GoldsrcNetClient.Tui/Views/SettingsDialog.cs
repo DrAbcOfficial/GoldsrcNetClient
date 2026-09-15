@@ -17,6 +17,7 @@ public sealed class SettingsDialog : Window, IConfirmed
     private readonly AppData _appData;
     private readonly UserInfoStore _userInfoStore;
     private readonly ConnectionManager _connManager;
+    private readonly AppSettingsStore? _appSettingsStore;
     private readonly Func<uint> _appIdProvider;
 
     private readonly TextField _nameTf;
@@ -40,16 +41,17 @@ public sealed class SettingsDialog : Window, IConfirmed
     public bool Confirmed { get; private set; }
 
     public SettingsDialog(AppData appData, UserInfoStore userInfoStore, ConnectionManager connManager)
-        : this(appData, userInfoStore, connManager, () => 70)
+        : this(appData, userInfoStore, connManager, () => 70, null)
     {
     }
 
     public SettingsDialog(AppData appData, UserInfoStore userInfoStore, ConnectionManager connManager,
-        Func<uint> appIdProvider)
+        Func<uint> appIdProvider, AppSettingsStore? appSettingsStore)
     {
         _appData = appData;
         _userInfoStore = userInfoStore;
         _connManager = connManager;
+        _appSettingsStore = appSettingsStore;
         _appIdProvider = appIdProvider;
 
         Title = "Settings";
@@ -98,7 +100,7 @@ public sealed class SettingsDialog : Window, IConfirmed
         };
         Add(_loginMethodDd);
 
-        _steamStatus = new Label { Text = BuildSteamStatus(), X = 1, Y = 10, Width = Dim.Fill() };
+        _steamStatus = new Label { Text = DescribeCurrentState(), X = 1, Y = 10, Width = Dim.Fill() };
         Add(_steamStatus);
 
         _steamApiBtn = new Button { Text = "Login via Steam API", X = 1, Y = 11 };
@@ -147,15 +149,7 @@ public sealed class SettingsDialog : Window, IConfirmed
 
         _loginMethodDd.ValueChanged += (s, e) =>
         {
-            string? val = _loginMethodDd.Value;
-            int idx = Array.IndexOf(LoginMethods, val ?? "");
-            if (idx < 0) return;
-            _steamStatus.Text = idx switch
-            {
-                1 => DescribeSteamApiState(),
-                2 => "SteamKit: press 'Login via QR Code' and scan with the Steam mobile app.",
-                _ => "No Steam: connect with fake auth data (works on non-secured servers)."
-            };
+            _steamStatus.Text = DescribeCurrentState();
         };
     }
 
@@ -174,11 +168,11 @@ public sealed class SettingsDialog : Window, IConfirmed
                 SteamNetAuthProvider? old = _appData.SteamApiProvider;
                 if (old != null && old.AppId == appId && old.IsAvailable)
                 {
-                    // Already logged in with this AppId.
+                    // Already logged in with this AppId — commit this login method.
                     OnUiThread(() =>
                     {
                         _steamApiBtn.Enabled = true;
-                        _steamStatus.Text = DescribeSteamApiState();
+                        SelectLoginMethod(LoginMethod.SteamApi);
                     });
                     return;
                 }
@@ -193,9 +187,10 @@ public sealed class SettingsDialog : Window, IConfirmed
                     {
                         _appData.SteamUsername = provider.GetSteamName();
                         _appData.SteamId = provider.GetSteamID();
+                        SelectLoginMethod(LoginMethod.SteamApi);
                     }
                     _steamApiBtn.Enabled = true;
-                    _steamStatus.Text = DescribeSteamApiState();
+                    _steamStatus.Text = DescribeCurrentState();
                 });
             }
             catch (Exception ex)
@@ -228,8 +223,29 @@ public sealed class SettingsDialog : Window, IConfirmed
         return $"Steam API login failed: {provider.LastError}";
     }
 
-    private static string BuildSteamStatus() =>
-        "Steam API: not initialized. Click 'Login via Steam API' (requires a running Steam client).";
+    /// <summary>Status line text for the login method the dropdown currently shows.</summary>
+    private string DescribeCurrentState() =>
+        Array.IndexOf(LoginMethods, _loginMethodDd.Value ?? "") switch
+        {
+            1 => DescribeSteamApiState(),
+            2 => "SteamKit: press 'Login via QR Code' and scan with the Steam mobile app.",
+            _ => "No Steam: connect with fake auth data (works on non-secured servers)."
+        };
+
+    /// <summary>
+    /// Moves the login-method dropdown to <paramref name="method"/> so a completed
+    /// login is what Save commits. Without this, logging in (e.g. Steam API) while
+    /// the dropdown still shows "No Steam" made Save map back to NoSteam and the
+    /// main status line kept reading "Auth: No Steam".
+    /// </summary>
+    private void SelectLoginMethod(LoginMethod method)
+    {
+        string target = LoginMethods[(int)method];
+        if (_loginMethodDd.Value != target)
+            _loginMethodDd.Value = target; // ValueChanged refreshes the status line
+        else
+            _steamStatus.Text = DescribeCurrentState();
+    }
 
     // ── SteamKit QR login ────────────────────────────────────────────────────
 
@@ -273,6 +289,7 @@ public sealed class SettingsDialog : Window, IConfirmed
                     _appData.SteamKitProvider = authProvider;
                     _appData.SteamUsername = authProvider.SteamUsername;
                     _appData.SteamId = authProvider.SteamId;
+                    SelectLoginMethod(LoginMethod.SteamKit);
                     _steamStatus.Text = "SteamKit: logged in.";
                 });
             }
@@ -314,6 +331,9 @@ public sealed class SettingsDialog : Window, IConfirmed
             2 => LoginMethod.SteamKit,
             _ => LoginMethod.NoSteam
         };
+        // Persist the method across restarts; the live Steam session itself is
+        // re-initialized on demand when connecting.
+        _appSettingsStore?.Save(new AppSettingsData { LoginMethod = _appData.LoginMethod });
         RequestStop();
     }
 

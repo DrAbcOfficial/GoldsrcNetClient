@@ -22,6 +22,7 @@ public sealed class MainView : View
     private readonly ServerConfigStore _configStore;
     private readonly ServerBrowser _browser;
     private readonly UserInfoStore _userInfoStore;
+    private readonly AppSettingsStore _settingsStore;
 
     private readonly ListView _serverList;
     private readonly TextView _logTv;
@@ -38,13 +39,14 @@ public sealed class MainView : View
     private static readonly string[] CmdTypes = ["StringCmd", "Move", "CvarValue", "CvarValue2"];
 
     public MainView(AppData appData, ConnectionManager connManager, ServerConfigStore configStore,
-        ServerBrowser browser, UserInfoStore userInfoStore)
+        ServerBrowser browser, UserInfoStore userInfoStore, AppSettingsStore settingsStore)
     {
         _appData = appData;
         _connManager = connManager;
         _configStore = configStore;
         _browser = browser;
         _userInfoStore = userInfoStore;
+        _settingsStore = settingsStore;
 
         Width = Dim.Fill();
         Height = Dim.Fill();
@@ -447,7 +449,10 @@ public sealed class MainView : View
 
     private void OpenSettings()
     {
-        RunModal(new SettingsDialog(_appData, _userInfoStore, _connManager), _ =>
+        // Steam API logins from Settings target the selected server's AppId, so
+        // the login is immediately usable for Connect instead of being re-initialized.
+        uint selectedAppId = (uint)(_configStore.Configs.ElementAtOrDefault(_selectedServerIdx)?.AppId ?? 70);
+        RunModal(new SettingsDialog(_appData, _userInfoStore, _connManager, () => selectedAppId, _settingsStore), _ =>
         {
             UpdateStatusLine(force: true);
         });

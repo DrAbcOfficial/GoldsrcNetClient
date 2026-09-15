@@ -24,6 +24,9 @@ public static class Program
         AppHolder.App = app;
 
         AppData appData = new();
+        AppSettingsStore settingsStore = new();
+        settingsStore.Load();
+        appData.LoginMethod = settingsStore.Data.LoginMethod;
         ServerConfigStore configStore = new();
         configStore.Load();
         UserInfoStore userInfoStore = new();
@@ -42,7 +45,7 @@ public static class Program
         ServerBrowser browser = new(configStore);
         browser.Reload();
 
-        MainView mainView = new(appData, connManager, configStore, browser, userInfoStore);
+        MainView mainView = new(appData, connManager, configStore, browser, userInfoStore, settingsStore);
 
         Window window = new()
         {
