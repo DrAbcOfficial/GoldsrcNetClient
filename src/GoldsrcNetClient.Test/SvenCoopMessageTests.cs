@@ -68,15 +68,6 @@ public class SvenCoopMessageHandlerTests
             => _pipeline.ProcessUserMessage(index, ref reader) is not null;
     }
 
-    /// <summary>Wraps a 32-bit Sven coordinate (value × 8).</summary>
-    private static IEnumerable<byte> Coord(int raw)
-    {
-        yield return (byte)(raw & 0xFF);
-        yield return (byte)((raw >> 8) & 0xFF);
-        yield return (byte)((raw >> 16) & 0xFF);
-        yield return (byte)((raw >> 24) & 0xFF);
-    }
-
     [Fact]
     public void CurWeapon_ParsesSvenWideFormat()
     {
@@ -164,9 +155,9 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange([0x19, 0x00]);                 // flags
         payload.AddRange([0x07, 0x00]);                 // entity 7
         payload.Add(0xC8);                              // volume 200
-        payload.AddRange(Coord(128));                   // origin x = 16.0
-        payload.AddRange(Coord(64));                    // origin y = 8.0
-        payload.AddRange(Coord(-32));                   // origin z = -4.0
+        payload.AddRange(TestWire.Coord(128));                   // origin x = 16.0
+        payload.AddRange(TestWire.Coord(64));                    // origin y = 8.0
+        payload.AddRange(TestWire.Coord(-32));                   // origin z = -4.0
         payload.Add(0x05);                              // channel
         payload.AddRange([0x0B, 0x00]);                 // sound index 11
 
@@ -196,7 +187,7 @@ public class SvenCoopMessageHandlerTests
         var payload = new List<byte>();
         payload.AddRange([0x00, 0x00]);                 // leading short (discarded by client)
         payload.Add(0x01);                              // enabled
-        payload.AddRange(Coord(8)); payload.AddRange(Coord(16)); payload.AddRange(Coord(24));
+        payload.AddRange(TestWire.Coord(8)); payload.AddRange(TestWire.Coord(16)); payload.AddRange(TestWire.Coord(24));
         payload.AddRange([0x2C, 0x01]);                 // unknown short = 300
         payload.AddRange([0x40, 0x80, 0xC0]);           // r g b
         payload.AddRange([0x10, 0x00]);                 // value1 = 16
@@ -228,7 +219,7 @@ public class SvenCoopMessageHandlerTests
         var payload = new List<byte>();
         payload.AddRange([0x0A, 0x00]);                 // entity 10
         payload.Add(0x05);                              // life ticks
-        payload.AddRange(Coord(0)); payload.AddRange(Coord(8)); payload.AddRange(Coord(16));
+        payload.AddRange(TestWire.Coord(0)); payload.AddRange(TestWire.Coord(8)); payload.AddRange(TestWire.Coord(16));
         payload.AddRange([0x10, 0x00]);                 // flags: only 0x10 (red)
         payload.Add(0xFF);                              // red
 
@@ -273,8 +264,8 @@ public class SvenCoopMessageHandlerTests
         var payload = new List<byte>();
         payload.AddRange([0x05, 0x00, 0x00, 0x00]);     // entity 5
         payload.Add(0x01);                              // enabled
-        payload.AddRange(Coord(8)); payload.AddRange(Coord(0)); payload.AddRange(Coord(0));   // vec1
-        payload.AddRange(Coord(0)); payload.AddRange(Coord(16)); payload.AddRange(Coord(0));  // vec2
+        payload.AddRange(TestWire.Coord(8)); payload.AddRange(TestWire.Coord(0)); payload.AddRange(TestWire.Coord(0));   // vec1
+        payload.AddRange(TestWire.Coord(0)); payload.AddRange(TestWire.Coord(16)); payload.AddRange(TestWire.Coord(0));  // vec2
         payload.Add(0x01);                              // type = 1
         payload.Add(0x00);                              // style
         payload.AddRange([0x00, 0x00, 0x80, 0x3F]);     // life = 1.0f
@@ -311,9 +302,9 @@ public class SvenCoopMessageHandlerTests
     {
         var payload = new List<byte> { 0x02 };          // two teams
         payload.AddRange(Encoding.UTF8.GetBytes("team1\0"));
-        payload.AddRange(Coord(80)); payload.AddRange(Coord(160)); payload.AddRange(Coord(240));
+        payload.AddRange(TestWire.Coord(80)); payload.AddRange(TestWire.Coord(160)); payload.AddRange(TestWire.Coord(240));
         payload.AddRange(Encoding.UTF8.GetBytes("team2\0"));
-        payload.AddRange(Coord(8)); payload.AddRange(Coord(16)); payload.AddRange(Coord(24));
+        payload.AddRange(TestWire.Coord(8)); payload.AddRange(TestWire.Coord(16)); payload.AddRange(TestWire.Coord(24));
 
         var (handler, conn) = Setup(0x59, "TeamNames", out var reader, payload.ToArray());
         ScTeamNamesMessage? ev = null;
@@ -510,7 +501,7 @@ public class SvenCoopMessageHandlerTests
     {
         var payload = new List<byte>();
         payload.AddRange(Encoding.UTF8.GetBytes("desert\0"));
-        payload.AddRange(Coord(64)); payload.AddRange(Coord(48)); payload.AddRange(Coord(32));
+        payload.AddRange(TestWire.Coord(64)); payload.AddRange(TestWire.Coord(48)); payload.AddRange(TestWire.Coord(32));
 
         var (handler, conn) = Setup(0x60, "ChangeSky", out var reader, payload.ToArray());
         ScChangeSkyMessage? ev = null;

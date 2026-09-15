@@ -4,7 +4,6 @@ using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Messages.Engine;
 using GoldsrcNetClient.Core.Messages.Parsing;
 using GoldsrcNetClient.Core.Protocol;
-using System.Text;
 
 namespace GoldsrcNetClient.Test;
 
@@ -119,15 +118,6 @@ public class MessageHubTests
 
 public class MessagePipelineTests
 {
-    /// <summary>Builds the payload of an svc_newusermsg registration (18 bytes).</summary>
-    private static byte[] Registration(byte index, byte size, string name)
-    {
-        var nameBytes = new byte[16];
-        var nameRaw = Encoding.UTF8.GetBytes(name);
-        Array.Copy(nameRaw, nameBytes, Math.Min(nameRaw.Length, 16));
-        return [index, size, .. nameBytes];
-    }
-
     private sealed record ChatMessage(byte Slot, string Text) : IServerMessage;
 
     private static ParserRegistry Registry(Action<ParserRegistry.Builder>? extra = null)
@@ -149,7 +139,7 @@ public class MessagePipelineTests
     {
         var hub = new MessageHub();
         var userMessages = new UserMessageRegistry();
-        var regReader = new BufferReader(Registration(0x4C, 0xFF, "SayText"));
+        var regReader = new BufferReader(TestWire.Registration(0x4C, 0xFF, "SayText"));
         userMessages.Register(ref regReader);
         return (new MessagePipeline(registry, userMessages, hub), hub);
     }
@@ -214,7 +204,7 @@ public class MessagePipelineTests
     {
         var hub = new MessageHub();
         var userMessages = new UserMessageRegistry();
-        var regReader = new BufferReader(Registration(0x50, 0x02, "CustomThing"));
+        var regReader = new BufferReader(TestWire.Registration(0x50, 0x02, "CustomThing"));
         userMessages.Register(ref regReader);
         var pipeline = new MessagePipeline(Registry(), userMessages, hub);
 

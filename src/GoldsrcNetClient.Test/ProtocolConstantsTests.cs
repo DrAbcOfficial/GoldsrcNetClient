@@ -19,42 +19,14 @@ public class MessageConstantsTests
         Assert.Equal(0x3FFFFFFFu, MessageConstants.SequenceMask);
     }
 
+    /// <summary>The 30-bit sequence mask must leave the two top bits for the
+    /// reliable/fragment flags — getting this wrong corrupts netchan sequencing.</summary>
     [Fact]
-    public void SequenceMask_Covers30Bits()
+    public void SequenceMask_LeavesFlagBitsFree()
     {
-        Assert.Equal(0x3FFFFFFFu, MessageConstants.SequenceMask);
         Assert.Equal(30, System.Numerics.BitOperations.PopCount(MessageConstants.SequenceMask));
-    }
-}
-
-public class PacketParsingTests
-{
-    [Fact]
-    public void ConnectedPacket_SequenceParsing()
-    {
-        uint seq = 42;
-        uint header = seq | MessageConstants.SequenceFlagReliable;
-
-        Assert.Equal(seq, header & MessageConstants.SequenceMask);
-        Assert.True((header & MessageConstants.SequenceFlagReliable) != 0);
-        Assert.False((header & MessageConstants.SequenceFlagFragment) != 0);
-    }
-
-    [Fact]
-    public void ConnectedPacket_FragmentFlag()
-    {
-        uint seq = 7;
-        uint header = seq | MessageConstants.SequenceFlagFragment;
-        Assert.Equal(seq, header & MessageConstants.SequenceMask);
-        Assert.True((header & MessageConstants.SequenceFlagFragment) != 0);
-    }
-
-    [Fact]
-    public void Sequence_Overflow()
-    {
-        uint seq = 0x3FFFFFFF;
-        uint next = (seq + 1) & MessageConstants.SequenceMask;
-        Assert.Equal(0u, next);
+        Assert.Equal(0u, MessageConstants.SequenceMask & MessageConstants.SequenceFlagReliable);
+        Assert.Equal(0u, MessageConstants.SequenceMask & MessageConstants.SequenceFlagFragment);
     }
 }
 
@@ -84,15 +56,36 @@ public class EnumsTests
         Assert.Equal(0x03, (byte)ClientCommandType.StringCmd);
     }
 
+    /// <summary>Wire-pinning: these enum values travel on the wire, so renumbering
+    /// them would silently break the protocol.</summary>
     [Fact]
-    public void ResourceFlag_FatalIfMissing_Unused()
+    public void SoundFlags_MatchClientDllBitLayout()
     {
-        Assert.Equal(1, (int)ResourceFlag.FatalIfMissing & 1);
+        Assert.Equal(1u << 0, SoundFlags.Volume);
+        Assert.Equal(1u << 1, SoundFlags.Attenuation);
+        Assert.Equal(1u << 2, SoundFlags.LargeIndex);
+        Assert.Equal(1u << 3, SoundFlags.Pitch);
+        Assert.Equal(1u << 8, SoundFlags.Spawning);
     }
 
-    [Fact]
-    public void SoundFlags_MaxSpawningBit()
+    [Theory]
+    [InlineData(ServerMessageType.Bad, 0x00)]
+    [InlineData(ServerMessageType.Nop, 0x01)]
+    [InlineData(ServerMessageType.Disconnect, 0x02)]
+    [InlineData(ServerMessageType.Print, 0x08)]
+    [InlineData(ServerMessageType.ServerInfo, 0x0B)]
+    [InlineData(ServerMessageType.UpdateUserInfo, 0x0D)]
+    [InlineData(ServerMessageType.DeltaDescription, 0x0E)]
+    [InlineData(ServerMessageType.SignOnNum, 0x19)]
+    public void ServerMessageType_WireValues(ServerMessageType type, byte expected)
     {
-        Assert.Equal(1u << 8, (uint)SoundFlags.Spawning);
+        Assert.Equal(expected, (byte)type);
+    }
+
+    /// <summary>User messages start at 0x40; anything at or above is a server-registered index.</summary>
+    [Fact]
+    public void UserMessageStart_Is_0x40()
+    {
+        Assert.Equal(0x40, (byte)ServerMessageType.UserMessageStart);
     }
 }

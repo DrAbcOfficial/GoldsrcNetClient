@@ -22,6 +22,11 @@ namespace GoldsrcNetClient.Core.Io;
 /// null terminator consumes the rest of the buffer as the string, matching the
 /// engine's lenient behaviour.
 /// </para>
+/// <para>
+/// This is a <c>ref struct</c>: pass it to helpers by <c>ref</c>, never by value —
+/// a by-value parameter is a copy, so reads inside the helper would not advance
+/// the caller's cursor.
+/// </para>
 /// <code>
 /// var reader = new BufferReader(data);
 /// byte type = reader.ReadUInt8();
