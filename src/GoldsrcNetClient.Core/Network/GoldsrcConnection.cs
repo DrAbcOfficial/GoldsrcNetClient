@@ -66,10 +66,8 @@ public partial class GoldsrcConnection : IDisposable
     private IPEndPoint? _activeEndpoint;
     private UserInfoString _userInfo;
     private readonly SplitPacketReassembler _splitReassembler = new();
-    private static readonly string? _messageDumpPath = Environment.GetEnvironmentVariable("GOLDSRC_MSGDUMP");
-    private static FileStream? _messageDumpStream = _messageDumpPath is null
-        ? null
-        : new FileStream(_messageDumpPath, FileMode.Append, FileAccess.Write, FileShare.Read);
+    private FileStream? _messageDumpStream;
+    private bool _messageDumpUnavailable;
 
     internal readonly ILogger<GoldsrcConnection> Logger;
 
@@ -406,6 +404,7 @@ public partial class GoldsrcConnection : IDisposable
     {
         _keepAliveCts?.Cancel();
         _keepAliveCts?.Dispose();
+        _messageDumpStream?.Dispose();
         _transport.Dispose();
     }
 

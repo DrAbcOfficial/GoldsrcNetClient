@@ -41,10 +41,15 @@ public sealed class GoldsrcConnectionFactory(
         IGameProfile? profile = null,
         ISteamAuthProvider? authProvider = null,
         ITransport? transport = null)
-        => new(
+    {
+        var connection = new GoldsrcConnection(
             _logger,
             authProvider ?? _authProvider,
             profile ?? _resolver.Resolve(null, null),
             _options.LocalPort,
             transport ?? _transport);
+        if (_options.MessageDumpPath is not null)
+            connection.Settings.MessageDumpPath = _options.MessageDumpPath;
+        return connection;
+    }
 }

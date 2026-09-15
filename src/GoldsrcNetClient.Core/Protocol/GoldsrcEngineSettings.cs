@@ -16,6 +16,12 @@ public class GoldsrcEngineSettings
     /// <summary>Network protocol version to use. Default 48 (compatible with HL25/GoldSrc).</summary>
     public int ProtocolVersion { get; set; } = 48;
 
+    /// <summary>Diagnostic stream dump path. When set, every connected message stream
+    /// is appended to this file as a length-prefixed record. The stream is opened
+    /// lazily on the first dumped message, so the path can also be assigned right
+    /// after construction; an open failure disables dumping for the connection.</summary>
+    public string? MessageDumpPath { get; set; }
+
     /// <summary>Interval in milliseconds between move/keepalive packet sends. Default 10ms
     /// (~100 packets/s, matching a real client's frame cadence). Two server-side
     /// constraints make a steady, sub-50ms cadence mandatory: the server stops

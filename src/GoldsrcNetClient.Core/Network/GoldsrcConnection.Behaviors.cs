@@ -92,13 +92,14 @@ public partial class GoldsrcConnection
     }
 
     /// <summary>
-    /// Diagnostics: with GOLDSRC_MSGDUMP=&lt;path&gt; set, appends every message
-    /// stream to a binary file (length-prefixed records). Far cheaper than
-    /// console logging, so it does not destabilise the receive loop.
+    /// Diagnostics: with <see cref="GoldsrcEngineSettings.MessageDumpPath"/> set (the
+    /// factory bridges <see cref="GoldsrcClientOptions.MessageDumpPath"/> into it),
+    /// appends every message stream to a binary file (length-prefixed records).
+    /// Far cheaper than console logging, so it does not destabilise the receive loop.
     /// </summary>
     private void DumpMessageStream(byte[] data)
     {
-        var dumpStream = _messageDumpStream;
+        var dumpStream = GetMessageDumpStream();
         if (dumpStream == null)
             return;
         try
@@ -108,5 +109,35 @@ public partial class GoldsrcConnection
             dumpStream.Flush();
         }
         catch { /* diagnostics only */ }
+    }
+
+    /// <summary>Opens the dump stream lazily from <see cref="GoldsrcEngineSettings.MessageDumpPath"/>
+    /// so the factory can assign the option after construction. An open failure disables
+    /// dumping for this connection instead of throwing into the receive path.</summary>
+    private FileStream? GetMessageDumpStream()
+    {
+        if (_messageDumpStream != null)
+            return _messageDumpStream;
+        if (_messageDumpUnavailable)
+            return null;
+
+        var path = Settings.MessageDumpPath;
+        if (string.IsNullOrEmpty(path))
+        {
+            _messageDumpUnavailable = true;
+            return null;
+        }
+
+        try
+        {
+            _messageDumpStream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+            return _messageDumpStream;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning("[Dump] could not open message dump file {Path}: {Message}", path, ex.Message);
+            _messageDumpUnavailable = true;
+            return null;
+        }
     }
 }

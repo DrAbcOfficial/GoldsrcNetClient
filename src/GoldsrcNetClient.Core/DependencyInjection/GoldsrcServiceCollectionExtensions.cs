@@ -87,6 +87,8 @@ public sealed class GoldsrcClientOptions
     /// Counter-Strike, Condition Zero, Sven Co-op). Default true.</summary>
     public bool IncludeBuiltInProfiles { get; set; } = true;
 
-    /// <summary>Diagnostic stream dump path (see the <c>GOLDSRC_MSGDUMP</c> environment variable).</summary>
+    /// <summary>Diagnostic stream dump path. When set, every connection created by the
+    /// factory appends its message streams to this file (see
+    /// <see cref="Protocol.GoldsrcEngineSettings.MessageDumpPath"/>).</summary>
     public string? MessageDumpPath { get; set; }
 }
