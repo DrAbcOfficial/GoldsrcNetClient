@@ -1,4 +1,5 @@
 using GoldsrcNetClient.Core.Io;
+using GoldsrcNetClient.Core.Network;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
@@ -30,17 +31,35 @@ public sealed record A2SInfo(
 /// Minimal A2S_INFO client for the Valve server query protocol. Speaks both the
 /// legacy GoldSrc reply (header <c>'m'</c>) and the Source reply (header <c>'I'</c>),
 /// and handles the challenge round-trip that some servers require before answering.
+/// The UDP transport is a seam: <see cref="A2SQuerier(Func{ITransport})"/> accepts a
+/// factory (one fresh transport per query, disposed afterwards) so tests can script
+/// replies without network I/O; the static convenience overload uses the default.
 /// </summary>
-public static class A2SQuerier
+public sealed class A2SQuerier
 {
     private static readonly byte[] InfoRequestSuffix = "Source Engine Query\0"u8.ToArray();
     private static readonly byte[] InfoRequest = BuildRequest([]);
+
+    private readonly Func<ITransport>? _transportFactory;
+
+    /// <summary>Creates a querier over an optional transport factory. Each query
+    /// invokes the factory once and disposes the transport it returns; when absent,
+    /// a real <see cref="UdpTransport"/> bound to an OS-assigned port is used.</summary>
+    public A2SQuerier(Func<ITransport>? transportFactory = null)
+    {
+        _transportFactory = transportFactory;
+    }
+
+    /// <summary>Convenience wrapper using the default transport; see <see cref="QueryAsync"/>.</summary>
+    public static Task<A2SInfo?> QueryInfoAsync(
+        string host, int port, CancellationToken ct = default, TimeSpan? timeout = null)
+        => new A2SQuerier().QueryAsync(host, port, ct, timeout);
 
     /// <summary>
     /// Queries <paramref name="host"/>:<paramref name="port"/> for server info.
     /// </summary>
     /// <returns>The parsed info, or null when the query timed out or the reply could not be parsed.</returns>
-    public static async Task<A2SInfo?> QueryInfoAsync(
+    public async Task<A2SInfo?> QueryAsync(
         string host, int port, CancellationToken ct = default, TimeSpan? timeout = null)
     {
         TimeSpan wait = timeout ?? TimeSpan.FromSeconds(2);
@@ -57,16 +76,15 @@ public static class A2SQuerier
 
             var endpoint = new IPEndPoint(ip, port);
 
-            using UdpClient udp = new();
-            udp.Connect(endpoint);
+            using ITransport transport = _transportFactory?.Invoke() ?? new UdpTransport(0);
 
             Stopwatch sw = Stopwatch.StartNew();
-            byte[] reply = await ExchangeAsync(udp, InfoRequest, link.Token);
+            byte[] reply = await ExchangeAsync(transport, endpoint, InfoRequest, link.Token);
             for (int round = 0; round < 2 && reply.Length >= 5 && reply[4] == (byte)'A'; round++)
             {
                 // Challenge response: resend the request with the challenge appended.
                 byte[] withChallenge = BuildRequest(reply[5..]);
-                reply = await ExchangeAsync(udp, withChallenge, link.Token);
+                reply = await ExchangeAsync(transport, endpoint, withChallenge, link.Token);
             }
             sw.Stop();
 
@@ -92,11 +110,17 @@ public static class A2SQuerier
         return request;
     }
 
-    private static async Task<byte[]> ExchangeAsync(UdpClient udp, byte[] request, CancellationToken ct)
+    private static async Task<byte[]> ExchangeAsync(ITransport transport, IPEndPoint endpoint, byte[] request, CancellationToken ct)
     {
-        await udp.SendAsync(request, ct);
-        UdpReceiveResult result = await udp.ReceiveAsync(ct);
-        return result.Buffer;
+        await transport.SendAsync(request, endpoint, ct);
+        while (true)
+        {
+            // The transport socket is bound but not connected, so it sees datagrams
+            // from anywhere; replies are filtered to the queried endpoint.
+            (byte[] buffer, IPEndPoint from) = await transport.ReceiveAsync(ct);
+            if (from.Equals(endpoint))
+                return buffer;
+        }
     }
 
     internal static A2SInfo? Parse(byte[] data, int pingMs)

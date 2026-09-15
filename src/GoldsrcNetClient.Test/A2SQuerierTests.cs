@@ -1,5 +1,7 @@
 using System.Text;
+using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Query;
+using System.Net;
 
 namespace GoldsrcNetClient.Test;
 
@@ -173,5 +175,64 @@ public class A2SQuerierTests
 
         // unterminated string
         Assert.Null(A2SQuerier.Parse([0xFF, 0xFF, 0xFF, 0xFF, (byte)'m', (byte)'a', (byte)'b'], 1));
+    }
+
+    [Fact]
+    public async Task QueryAsync_InjectedTransport_ParsesReplyAndFiltersForeignDatagrams()
+    {
+        byte[] reply =
+        [
+            .. Header(),
+            (byte)'m',
+            .. Str("127.0.0.1:27015"),
+            .. Str("Seam Server"),
+            .. Str("crossfire"),
+            .. Str("valve"),
+            .. Str("Half-Life"),
+            0x01, // players
+            0x10, // max = 16
+        ];
+
+        // A datagram from a different endpoint arrives first; the querier must
+        // ignore it and keep waiting for the reply from the queried endpoint.
+        var transport = new ScriptedTransport();
+        transport.Replies.Enqueue((new IPEndPoint(IPAddress.Loopback, 40000), [0x01, 0x02, 0x03]));
+        transport.Replies.Enqueue((new IPEndPoint(IPAddress.Loopback, 27015), reply));
+
+        var querier = new A2SQuerier(() => transport);
+        A2SInfo? info = await querier.QueryAsync("127.0.0.1", 27015);
+
+        Assert.NotNull(info);
+        Assert.Equal("Seam Server", info.ServerName);
+        Assert.Equal(1, info.Players);
+        Assert.Equal(16, info.MaxPlayers);
+        Assert.Single(transport.Requests); // one request: the reply was not a challenge
+        transport.Dispose();
+    }
+
+    /// <summary>Transport fake replaying queued (endpoint, datagram) pairs and
+    /// recording every request — no network I/O.</summary>
+    private sealed class ScriptedTransport : ITransport
+    {
+        public Queue<(IPEndPoint From, byte[] Buffer)> Replies { get; } = new();
+        public List<byte[]> Requests { get; } = [];
+
+        public Task SendAsync(ReadOnlyMemory<byte> buffer, IPEndPoint target, CancellationToken ct)
+        {
+            Requests.Add(buffer.ToArray());
+            return Task.CompletedTask;
+        }
+
+        public Task<(byte[] Buffer, IPEndPoint RemoteEndPoint)> ReceiveAsync(CancellationToken ct)
+        {
+            if (Replies.Count > 0)
+            {
+                var (from, buffer) = Replies.Dequeue();
+                return Task.FromResult((buffer, from));
+            }
+            return Task.FromResult((Array.Empty<byte>(), new IPEndPoint(IPAddress.Any, 0)));
+        }
+
+        public void Dispose() { }
     }
 }
