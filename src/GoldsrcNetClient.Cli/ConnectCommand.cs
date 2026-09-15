@@ -7,6 +7,8 @@ using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Io;
+using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Messages.Engine;
 using GoldsrcNetClient.SteamProvider;
 using Microsoft.Extensions.Logging;
 using QRCoder;
@@ -181,12 +183,8 @@ public partial class ConnectCommand : ICommand
         CancellationTokenSource exitCts)
     {
         var userCts = new CancellationTokenSource();
-        var cliHandler = new CliServerMessageHandler(console, Debug);
         if (gameHandler is GameMessageHandler chain)
-        {
             chain.Reset(); // fresh user-message registry per session (map changes reconnect)
-            chain.Next = cliHandler;
-        }
 
         using var connection = new GoldsrcConnection(logger, authProvider, gameHandler, profile.EngineVariant);
         connection.UserInfo = profile.DefaultUserInfo;
@@ -209,32 +207,30 @@ public partial class ConnectCommand : ICommand
             }
         }
 
-        connection.OnServerInfo += (conn, info) =>
+        connection.Subscribe<ServerInfoMessage>(info =>
         {
             unsafe
             {
+                var d = info.Data;
                 console.Output.WriteLine("─────────────────────────────────────");
-                console.Output.WriteLine($"  Protocol:      {info.ProtocolVersion}");
-                console.Output.WriteLine($"  Max Clients:   {info.MaxClients}");
-                console.Output.WriteLine($"  Player Slot:   {info.PlayerNumber}");
-                console.Output.WriteLine($"  Spawn Count:   {info.SpawnCount}");
-                console.Output.WriteLine($"  Worldmap CRC:  0x{info.Munge3WorldmapCrc:X8} (encrypted)");
-                console.Output.WriteLine($"  ClientDLL MD5: {new ReadOnlySpan<byte>(info.Md5ClientDll, 16).ToHexPreview(16)}");
+                console.Output.WriteLine($"  Protocol:      {d.ProtocolVersion}");
+                console.Output.WriteLine($"  Max Clients:   {d.MaxClients}");
+                console.Output.WriteLine($"  Player Slot:   {d.PlayerNumber}");
+                console.Output.WriteLine($"  Spawn Count:   {d.SpawnCount}");
+                console.Output.WriteLine($"  Worldmap CRC:  0x{d.Munge3WorldmapCrc:X8} (encrypted)");
+                console.Output.WriteLine($"  ClientDLL MD5: {new ReadOnlySpan<byte>(d.Md5ClientDll, 16).ToHexPreview(16)}");
                 console.Output.WriteLine("─────────────────────────────────────");
             }
-        };
-        connection.OnConsolePrint += msg => console.Output.WriteLine($"[Server] {msg.TrimEnd('\n')}");
-        connection.OnCenterPrint += msg => console.Output.WriteLine($"[CenterPrint] {msg}");
-        connection.OnServerDisconnect += reason =>
+        });
+        connection.Subscribe<PrintMessage>(m => console.Output.WriteLine($"[Server] {m.Text.TrimEnd('\n')}"));
+        connection.Subscribe<CenterPrintMessage>(m => console.Output.WriteLine($"[CenterPrint] {m.Text}"));
+        connection.Subscribe<DisconnectMessage>(m =>
         {
-            console.Output.WriteLine($"[Disconnect] {reason}");
+            console.Output.WriteLine($"[Disconnect] {m.Reason}");
             userCts.Cancel();
-        };
-        connection.OnDataPacket += (conn, raw) =>
-        {
-            if (Debug)
-                Emit("raw_packet", new { length = raw.Length, hex = raw.AsSpan().ToHexPreview(raw.Length) }, console);
-        };
+        });
+        if (Debug)
+            connection.Messages.SubscribeAll(m => Emit("message", new { type = m.GetType().Name }, console));
 
         if (gameHandler is HalfLifeMessageHandler hlHandler)
         {

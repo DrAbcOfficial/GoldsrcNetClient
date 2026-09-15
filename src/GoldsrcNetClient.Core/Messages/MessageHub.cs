@@ -24,9 +24,15 @@ namespace GoldsrcNetClient.Core.Messages;
 /// </remarks>
 public sealed class MessageHub
 {
+    private static readonly Type AllKey = typeof(AllKeyMarker);
+
+    private sealed record AllKeyMarker;
+
     private readonly Dictionary<Type, List<Delegate>> _handlers = [];
+    private readonly List<Delegate> _all = [];
     private readonly Lock _lock = new();
     private Dictionary<Type, Delegate[]> _snapshot = [];
+    private Delegate[]? _allSnapshot;
 
     /// <summary>Subscribes a handler for one message type. Dispose the returned
     /// registration to unsubscribe.</summary>
@@ -50,33 +56,68 @@ public sealed class MessageHub
         return new Subscription(this, typeof(T), wrapped);
     }
 
+    /// <summary>
+    /// Subscribes a handler invoked for <em>every</em> published message,
+    /// regardless of type — for diagnostics and message tracing. Regular
+    /// type subscriptions are invoked first.
+    /// </summary>
+    public IDisposable SubscribeAll(Action<IServerMessage> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+
+        lock (_lock)
+        {
+            _all.Add(handler);
+            _snapshot = [];
+        }
+
+        return new Subscription(this, AllKey, handler);
+    }
+
     /// <summary>Publishes a message to every handler subscribed for its exact runtime type.</summary>
     public void Publish(IServerMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
 
         var handlers = _snapshot;
-        if (handlers.Count == 0)
+        var allHandlers = _allSnapshot;
+        if (handlers.Count == 0 && allHandlers is null)
         {
             lock (_lock)
             {
                 handlers = _snapshot = _handlers.ToDictionary(
                     kv => kv.Key, kv => kv.Value.ToArray());
+                _allSnapshot = allHandlers = _all.Count == 0 ? null : _all.ToArray();
             }
         }
 
-        if (!handlers.TryGetValue(message.GetType(), out var actions))
-            return;
-
-        foreach (var action in actions)
+        if (handlers.TryGetValue(message.GetType(), out var actions))
         {
-            try
+            foreach (var action in actions)
             {
-                ((Action<IServerMessage>)action)(message);
+                try
+                {
+                    ((Action<IServerMessage>)action)(message);
+                }
+                catch (Exception)
+                {
+                    // A misbehaving subscriber must not break the receive loop.
+                }
             }
-            catch (Exception)
+        }
+
+        if (allHandlers is not null)
+        {
+            foreach (var action in allHandlers)
             {
-                // A misbehaving subscriber must not break the receive loop.
+                try
+                {
+                    ((Action<IServerMessage>)action)(message);
+                }
+                catch (Exception)
+                {
+                    // A misbehaving subscriber must not break the receive loop.
+                }
             }
         }
     }
@@ -85,13 +126,18 @@ public sealed class MessageHub
     {
         lock (_lock)
         {
-            if (_handlers.TryGetValue(type, out var list))
+            if (type == AllKey)
+            {
+                _all.Remove(handler);
+            }
+            else if (_handlers.TryGetValue(type, out var list))
             {
                 list.Remove(handler);
                 if (list.Count == 0)
                     _handlers.Remove(type);
             }
             _snapshot = [];
+            _allSnapshot = null;
         }
     }
 

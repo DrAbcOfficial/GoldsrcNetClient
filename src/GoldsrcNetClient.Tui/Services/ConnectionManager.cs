@@ -1,6 +1,8 @@
 using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Handshake;
+using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Messages.Engine;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Tui.Models;
@@ -80,15 +82,15 @@ public sealed class ConnectionManager : IDisposable
         _connection.UserInfo = userInfo;
 
         // Console output, center prints, and server-initiated disconnects are handled
-        // by the built-in Core processing and surfaced here via events.
-        _connection.OnConsolePrint += msg => Emit($"[Print] {msg}");
-        _connection.OnCenterPrint += msg => Emit($"[CenterPrint] {msg}");
-        _connection.OnServerDisconnect += HandleDisconnect;
+        // by the built-in Core processing and surfaced here as typed messages.
+        _connection.Subscribe<PrintMessage>(m => Emit($"[Print] {m.Text}"));
+        _connection.Subscribe<CenterPrintMessage>(m => Emit($"[CenterPrint] {m.Text}"));
+        _connection.Subscribe<DisconnectMessage>(m => HandleDisconnect(m.Reason));
 
-        _connection.OnServerInfo += (conn, info) =>
+        _connection.Subscribe<ServerInfoMessage>(m =>
         {
-            Emit($"ServerInfo: protocol={info.ProtocolVersion}, maxClients={info.MaxClients}, playerSlot={info.PlayerNumber}, spawnCount={info.SpawnCount}");
-        };
+            Emit($"ServerInfo: protocol={m.Data.ProtocolVersion}, maxClients={m.Data.MaxClients}, playerSlot={m.Data.PlayerNumber}, spawnCount={m.Data.SpawnCount}");
+        });
 
         var token = _cts.Token;
         _connectTask = Task.Run(async () =>

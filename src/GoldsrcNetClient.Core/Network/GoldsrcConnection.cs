@@ -1,6 +1,7 @@
 using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Messages.Parsing;
 using GoldsrcNetClient.Core.Netchan;
 using GoldsrcNetClient.Core.Protocol;
 using Microsoft.Extensions.Logging;
@@ -8,7 +9,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Threading.Channels;
 
 namespace GoldsrcNetClient.Core.Network;
@@ -17,32 +17,31 @@ namespace GoldsrcNetClient.Core.Network;
 /// Main entry point for the GoldSrc (Half-Life 1) engine network client.
 /// Orchestrates the UDP transport, the connection handshake
 /// (getchallenge → connect → connected), the per-endpoint sequenced channel
-/// (netchan), and connected server-message processing (Munge decryption, delta
-/// compression parsing, resource list decoding). Engine-branch wire differences
-/// come from an <see cref="IEngineVariant"/> instead of game-specific code —
-/// the per-mod message handlers plug in through <see cref="IServerMessageHandler"/>.
+/// (netchan), and connected server-message processing through the
+/// <see cref="MessagePipeline"/>: parsed engine messages are published as typed
+/// records to <see cref="Messages"/> — subscribe with
+/// <see cref="Subscribe{T}"/>. Engine-branch wire differences come from an
+/// <see cref="IEngineVariant"/> instead of game-specific code.
 /// </summary>
 /// <remarks>
 /// Usage:
 /// <code>
 /// var conn = new GoldsrcConnection(logger, authProvider);
-/// conn.OnServerInfo += (c, info) => Console.WriteLine($"Player #{info.PlayerNumber}");
-/// await conn.ConnectAsync("127.0.0.1", 27015);
+/// using var sub = conn.Subscribe&lt;PrintMessage&gt;(m => Console.WriteLine(m.Text));
+/// await conn.ConnectAsync(70, "127.0.0.1", 27015);
 /// await conn.Connected;  // wait for handshake completion
 /// </code>
 /// </remarks>
 public partial class GoldsrcConnection : IDisposable
 {
     /// <summary>Per-endpoint session: session data, sequenced channel, and handshake state.</summary>
-    private sealed class Session(IPEndPoint endpoint)
+    private sealed class Session
     {
-        public ConnectionContext Context { get; } = new()
-        {
-            ServerIp = BitConverter.ToUInt32(endpoint.Address.GetAddressBytes()),
-            ServerPort = (ushort)endpoint.Port
-        };
+        public required ConnectionContext Context { get; init; }
 
         public required NetchanChannel Channel { get; init; }
+
+        public required MessagePipeline Pipeline { get; init; }
 
         public SessionState State = SessionState.GetChallenge;
     }
@@ -54,7 +53,6 @@ public partial class GoldsrcConnection : IDisposable
     private readonly ISteamAuthProvider _authProvider;
     private readonly IServerMessageHandler _messageHandler;
     private readonly HandshakeNegotiator _handshake;
-    private readonly Dictionary<byte, MessageParser> _messageParsers;
     private readonly IEngineVariant _variant;
     private readonly Func<ReadOnlyMemory<byte>, IPEndPoint, CancellationToken, Task> _sendPacket;
     private readonly TaskCompletionSource _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -72,23 +70,26 @@ public partial class GoldsrcConnection : IDisposable
 
     internal readonly ILogger<GoldsrcConnection> Logger;
 
-    /// <summary>The session of the most recent <see cref="ConnectAsync"/> target, if any.</summary>
-    private Session? ActiveSession
-        => _sessions.TryGetValue(_activeEndpoint ?? DummyEndpoint, out var session) ? session : null;
-
-    /// <summary>Raised when the server disconnects the client, with the server-supplied reason.</summary>
-    public event Action<string>? OnServerDisconnect;
+    /// <summary>
+    /// Typed message hub every parsed server message is published to.
+    /// Engine messages arrive as <see cref="Messages.Engine"/> records
+    /// (<see cref="EngineMessageParsers"/> vocabulary); user messages follow the
+    /// active game profile.
+    /// </summary>
+    public MessageHub Messages { get; } = new();
 
     /// <summary>
-    /// Raised for every <c>svc_print</c> console message the server sends
-    /// (chat for text-only mods, kick/drop notices, rule changes, etc.).
+    /// Subscribes a typed message handler on <see cref="Messages"/>. Same as
+    /// <c>Messages.Subscribe</c>, kept on the connection for discoverability.
     /// </summary>
-    public event Action<string>? OnConsolePrint;
+    public IDisposable Subscribe<T>(Action<T> handler) where T : class, IServerMessage
+        => Messages.Subscribe(handler);
 
     /// <summary>
-    /// Raised for every <c>svc_centerprint</c> message the server sends.
+    /// Raised for every connected (sequenced) packet received, before decryption.
+    /// Transport-level diagnostics — for parsed messages subscribe to <see cref="Messages"/>.
     /// </summary>
-    public event Action<string>? OnCenterPrint;
+    public event Action<byte[]>? OnDataPacket;
 
     /// <summary>
     /// Configurable engine behavior settings. Modify before or during a connection
@@ -105,44 +106,6 @@ public partial class GoldsrcConnection : IDisposable
         get => ActiveSession?.Context.SpawnCount ?? 0;
         set => ActiveSession?.Context.SpawnCount = value;
     }
-
-    /// <summary>Delegate for <see cref="OnServerInfo"/> events.</summary>
-    /// <param name="conn">The connection that received the server info.</param>
-    /// <param name="info">Parsed server info data.</param>
-    public delegate void ServerInfoHandler(GoldsrcConnection conn, ServerInfoData info);
-
-    /// <summary>
-    /// Raised when the server sends its <see cref="ServerMessageType.ServerInfo"/> block.
-    /// Contains protocol version, spawn count, worldmap CRC, player slot, and more.
-    /// </summary>
-    public event ServerInfoHandler? OnServerInfo;
-
-    /// <summary>Delegate for <see cref="OnResourceList"/> events.</summary>
-    /// <param name="conn">The connection that received the resource list.</param>
-    /// <param name="resources">Array of resource descriptors (maps, models, sounds).</param>
-    public delegate void ResourceListHandler(GoldsrcConnection conn, ResourceInfo[] resources);
-
-    /// <summary>
-    /// Raised when the server sends its <see cref="ServerMessageType.ResourceList"/>.
-    /// Lists all resources the server expects the client to have.
-    /// </summary>
-    public event ResourceListHandler? OnResourceList;
-
-    /// <summary>
-    /// Raw bit-packed payload of the most recent <c>svc_resourcelist</c> from the server
-    /// (the data after the 0x2B type byte). Used to echo back identical data when the
-    /// server sends a <see cref="ServerMessageType.ResourceRequest"/>.
-    /// Returns an empty array if no resource list has been received yet.
-    /// </summary>
-    public byte[] ResourceListRawBytes => ActiveSession?.Context.ResourceListRawBytes ?? [];
-
-    /// <summary>Delegate for <see cref="OnDataPacket"/> events.</summary>
-    /// <param name="conn">The connection that received the data.</param>
-    /// <param name="data">Raw packet bytes (including header) for debugging or external processing.</param>
-    public delegate void DataPacketHandler(GoldsrcConnection conn, byte[] data);
-
-    /// <summary>Raised for every connected (sequenced) packet received, before decryption.</summary>
-    public event DataPacketHandler? OnDataPacket;
 
     /// <summary>A task that completes when the connection handshake reaches <see cref="SessionState.Connected"/>.</summary>
     public Task Connected => _connectedTcs.Task;
@@ -184,10 +147,9 @@ public partial class GoldsrcConnection : IDisposable
     /// </summary>
     /// <param name="logger">Optional logger; defaults to <see cref="NullLogger{GoldsrcConnection}"/>.</param>
     /// <param name="authProvider">Steam auth provider; defaults to <see cref="NoSteamAuthProvider"/> which sends a fake key.</param>
-    /// <param name="messageHandler">Optional server message handler. Called for each message type in connected packets
-    /// before built-in processing. Return <c>true</c> to consume the message; <c>false</c> to fall through to the default parser.
-    /// Defaults to <see cref="DefaultServerMessageHandler"/> which always delegates to built-in logic.
-    /// Game/mod profiles build on this (see <see cref="Game.IGameLoginProvider.CreateMessageHandler"/>).</param>
+    /// <param name="messageHandler">Optional legacy server message handler, called for each message before pipeline parsing.
+    /// Return <c>true</c> to consume the message. Game profiles replace this with parser registrations
+    /// (see <see cref="Game.IGameLoginProvider"/>); the hook exists for the transition period.</param>
     /// <param name="engineVariant">Engine-branch wire dialect; defaults to the standard Valve branch.
     /// Pass the profile's variant when connecting to a different branch
     /// (e.g. <see cref="EngineVariants.SvenCoop"/>).</param>
@@ -209,8 +171,8 @@ public partial class GoldsrcConnection : IDisposable
         _socket.Client.ReceiveBufferSize = 4 * 1024 * 1024;
         _sendPacket = (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask();
         _handshake = new HandshakeNegotiator(_authProvider, Settings, _sendPacket, Logger);
-        _messageParsers = BuildMessageParsers();
         _userInfo = new UserInfoString(Settings.DefaultUserInfo);
+        AttachProtocolBehaviors();
     }
 
     /// <summary>
@@ -285,10 +247,7 @@ public partial class GoldsrcConnection : IDisposable
         _activeEndpoint = ep;
         Logger.LogDebug($"[DNS] resolved {host} -> {ep}");
 
-        var session = new Session(ep)
-        {
-            Channel = new NetchanChannel(ep, _sendPacket, Logger, _variant)
-        };
+        var session = CreateSession(ep);
         _sessions[ep] = session;
 
         Logger.LogDebug($"[State] Begin -> GetChallenge. Sending getchallenge (steam={_authProvider.IsAvailable}, authProto={_authProvider.GetAuthProtocol()})");
@@ -321,9 +280,10 @@ public partial class GoldsrcConnection : IDisposable
             {
                 while (reader.TryRead(out var message))
                 {
+                    DumpMessageStream(message);
                     try
                     {
-                        ProcessConnected(ep, message);
+                        session.Pipeline.Process(message);
                     }
                     catch (Exception ex)
                     {
@@ -366,7 +326,7 @@ public partial class GoldsrcConnection : IDisposable
             if (header == MessageConstants.ConnectionlessMarker)
             {
                 int offset = 4;
-                var payload = Encoding.UTF8.GetString(data, offset, len - offset);
+                var payload = System.Text.Encoding.UTF8.GetString(data, offset, len - offset);
                 Logger.LogDebug($"connectionless: {payload[..Math.Min(payload.Length, 200)]}");
                 session.State = await _handshake.HandleResponseAsync(
                     session.State, ep, appId, _userInfo.ToString(), session.Context, payload, SendStringCmdAsync, ct);
@@ -393,7 +353,7 @@ public partial class GoldsrcConnection : IDisposable
             }
             else
             {
-                OnDataPacket?.Invoke(this, data);
+                OnDataPacket?.Invoke(data);
                 await inbound.Writer.WriteAsync(data, ct);
             }
         }
@@ -422,6 +382,31 @@ public partial class GoldsrcConnection : IDisposable
             messages.Writer.TryComplete();
             try { await messageConsumer.WaitAsync(TimeSpan.FromSeconds(2)); } catch { /* flush best-effort */ }
         }
+    }
+
+    /// <summary>Builds the per-session parse pipeline: fresh parser closures over
+    /// the session context and a fresh runtime user-message registry.</summary>
+    private Session CreateSession(IPEndPoint ep)
+    {
+        var ctx = new ConnectionContext
+        {
+            ServerIp = BitConverter.ToUInt32(ep.Address.GetAddressBytes()),
+            ServerPort = (ushort)ep.Port
+        };
+        var builder = new ParserRegistry.Builder();
+        EngineMessageParsers.Register(builder, _variant, ctx);
+        var pipeline = new MessagePipeline(builder.Build(), new Game.UserMessageRegistry(), Messages, Logger)
+        {
+            // Legacy hook so game handler chains keep working until the
+            // profile-based message sets fully replace them.
+            Interceptor = (type, ref reader) => _messageHandler.HandleMessage(this, type, ref reader),
+        };
+        return new Session
+        {
+            Context = ctx,
+            Channel = new NetchanChannel(ep, _sendPacket, Logger, _variant),
+            Pipeline = pipeline,
+        };
     }
 
     /// <summary>Closes the underlying UDP socket and releases all resources.</summary>

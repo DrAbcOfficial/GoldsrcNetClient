@@ -16,6 +16,16 @@ public sealed class UserMessageRegistry
     public int Count => _messages.Count;
 
     /// <summary>
+    /// Registers a user message directly (used when replaying a
+    /// <c>NewUserMsgMessage</c> into the runtime registry).
+    /// </summary>
+    public void Register(byte index, string name, byte declaredSize)
+    {
+        if (name.Length > 0)
+            _messages[index] = new UserMessageRegistration(name, declaredSize);
+    }
+
+    /// <summary>
     /// Clears all registered messages. Call when a new connection is established.
     /// </summary>
     public void Clear() => _messages.Clear();

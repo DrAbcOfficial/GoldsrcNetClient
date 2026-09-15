@@ -31,16 +31,33 @@ namespace GoldsrcNetClient.Core.Messages;
 /// </remarks>
 public sealed class MessagePipeline
 {
+    /// <summary>
+    /// Optional last-chance interception before pipeline parsing. Return true
+    /// to consume the message (the reader must already be advanced past it);
+    /// return false to let the pipeline parse it. Used to host legacy
+    /// <c>IServerMessageHandler</c> chains during the handler migration.
+    /// </summary>
+    public delegate bool MessageInterceptor(byte messageType, ref BufferReader reader);
+
     private readonly ParserRegistry _parsers;
     private readonly UserMessageRegistry _userMessages;
     private readonly MessageHub _hub;
     private readonly ILogger _logger;
+
+    private MessageInterceptor? _interceptor;
 
     /// <summary>The runtime user-message registrations learned from svc_newusermsg.</summary>
     public UserMessageRegistry UserMessages => _userMessages;
 
     /// <summary>The hub every parsed message is published to.</summary>
     public MessageHub Hub => _hub;
+
+    /// <summary>See <see cref="MessageInterceptor"/>.</summary>
+    public MessageInterceptor? Interceptor
+    {
+        get => _interceptor;
+        set => _interceptor = value;
+    }
 
     /// <summary>
     /// Creates the pipeline over a frozen parser set. The registry typically
@@ -61,6 +78,9 @@ public sealed class MessagePipeline
         while (reader.Remaining > 0)
         {
             byte type = reader.ReadUInt8();
+
+            if (_interceptor?.Invoke(type, ref reader) == true)
+                continue; // fully handled by the legacy hook
 
             IServerMessage message;
             if (type >= (byte)ServerMessageType.UserMessageStart)
