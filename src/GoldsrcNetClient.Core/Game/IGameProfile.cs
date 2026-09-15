@@ -115,14 +115,18 @@ public sealed class HalfLifeProfile : GameProfileBase
     public override void RegisterMessages(ParserRegistry.Builder builder) => HalfLifeMessages.Register(builder);
 
     /// <inheritdoc />
-    /// <remarks>ReqState: the game DLL's voice manager asks for the client's voice
-    /// state; the vanilla client replies with <c>VModEnable 1</c>. Unanswered polls
-    /// keep the server re-queueing state until its reliable channel overflows.</remarks>
-    public override void AttachSession(GoldsrcConnection connection)
+    public override void AttachSession(GoldsrcConnection connection) => AttachVoiceStateReply(connection);
+
+    /// <summary>
+    /// Shared Valve-lineage session behavior: answers the game DLL's voice-manager
+    /// poll with <c>VModEnable 1</c>. Unanswered ReqState polls keep the server
+    /// re-queueing state until its reliable channel overflows. Counter-Strike and
+    /// Sven Co-op attach the same behavior instead of instantiating this profile.
+    /// </summary>
+    public static void AttachVoiceStateReply(GoldsrcConnection connection)
     {
         connection.Subscribe<ReqStateMessage>(message =>
         {
-            _ = message;
             connection.Logger.LogDebug("[ReqState] replying VModEnable 1");
             _ = connection.SendStringCmdAsync(ClientCommandType.StringCmd, "VModEnable 1");
         });
@@ -143,7 +147,7 @@ public class CounterStrikeProfile : GameProfileBase
     public override void RegisterMessages(ParserRegistry.Builder builder) => CounterStrikeMessages.Register(builder);
 
     /// <inheritdoc />
-    public override void AttachSession(GoldsrcConnection connection) => new HalfLifeProfile().AttachSession(connection);
+    public override void AttachSession(GoldsrcConnection connection) => HalfLifeProfile.AttachVoiceStateReply(connection);
 }
 
 /// <summary>Counter-Strike: Condition Zero (AppId 80).</summary>
@@ -179,5 +183,5 @@ public sealed class SvenCoopProfile : GameProfileBase
     public override void RegisterMessages(ParserRegistry.Builder builder) => SvenCoopMessages.Register(builder);
 
     /// <inheritdoc />
-    public override void AttachSession(GoldsrcConnection connection) => new HalfLifeProfile().AttachSession(connection);
+    public override void AttachSession(GoldsrcConnection connection) => HalfLifeProfile.AttachVoiceStateReply(connection);
 }
