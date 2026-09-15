@@ -156,7 +156,7 @@ public class BufferReaderBitsTests
     [Fact]
     public void Bits_SpanByteBoundary()
     {
-        // 10 bits from 0b00101101 0b11000000 -> 0b0000101101 = 45 (legacy BitReader case).
+        // 10 bits from 0b00101101 0b11000000 -> 0b0000101101 = 45.
         var reader = new BufferReader((byte[])[0b00101101, 0b11000000]);
         Assert.Equal(45u, reader.ReadBits(10));
     }
