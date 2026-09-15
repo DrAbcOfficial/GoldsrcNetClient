@@ -7,7 +7,7 @@ namespace GoldsrcNetClient.Core.Protocol;
 public class GoldsrcEngineSettings
 {
     /// <summary>Canonical default userinfo template. Single source shared by
-    /// <see cref="DefaultUserInfo"/> and <see cref="Game.BaseGameLoginProvider.DefaultUserInfo"/>:
+    /// <see cref="DefaultUserInfo"/> and <see cref="Game.GameProfileBase.DefaultUserInfo"/>:
     /// a high <c>rate</c> keeps the server's reliable fragment stream draining fast;
     /// the server clamps it to <c>sv_maxrate</c> anyway.</summary>
     public const string DefaultUserInfoTemplate =

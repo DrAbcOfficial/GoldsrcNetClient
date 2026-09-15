@@ -5,8 +5,9 @@ namespace GoldsrcNetClient.Core.Protocol;
 /// (netchan, server-message parsers, signon flow) consumes this abstraction
 /// instead of branching on game identities, inverting the dependency between
 /// the transport layer and the game/mod layer: supporting a new engine branch
-/// means implementing (or configuring) this interface and registering an
-/// <see cref="GoldsrcNetClient.Core.Game.IGameLoginProvider"/> that returns it —
+/// means implementing (or configuring) this interface and exposing it from an
+/// <see cref="GoldsrcNetClient.Core.Game.IGameProfile"/> (its
+/// <see cref="GoldsrcNetClient.Core.Game.IGameProfile.EngineVariant"/> property) —
 /// no changes inside the protocol code.
 /// </summary>
 public interface IEngineVariant
