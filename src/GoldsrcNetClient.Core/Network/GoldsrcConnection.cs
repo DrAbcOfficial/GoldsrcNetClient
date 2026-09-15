@@ -34,21 +34,25 @@ namespace GoldsrcNetClient.Core.Network;
 /// </remarks>
 public partial class GoldsrcConnection : IDisposable
 {
-    /// <summary>Per-endpoint session: session data, sequenced channel, and handshake state.</summary>
+    /// <summary>Per-endpoint session: session data, sequenced channel, signon state machine, and handshake state.</summary>
     private sealed class Session
     {
-        public required ConnectionContext Context { get; init; }
+        public required HandshakeState Handshake { get; init; }
+
+        public required SessionData Data { get; init; }
 
         public required NetchanChannel Channel { get; init; }
 
         public required MessagePipeline Pipeline { get; init; }
 
-        public SessionState State = SessionState.GetChallenge;
+        public required SignonController Signon { get; init; }
+
+        public Protocol.SessionState State = Protocol.SessionState.GetChallenge;
     }
 
     private static readonly IPEndPoint DummyEndpoint = new(0, 0);
 
-    private readonly UdpClient _socket;
+    private readonly ITransport _transport;
     private readonly Dictionary<IPEndPoint, Session> _sessions = [];
     private readonly ISteamAuthProvider _authProvider;
     private readonly IServerMessageHandler _messageHandler;
@@ -59,8 +63,6 @@ public partial class GoldsrcConnection : IDisposable
     private CancellationTokenSource? _keepAliveCts;
 
     private IPEndPoint? _activeEndpoint;
-    private bool _sentContinueLoading;
-    private bool _sentSpawn;
     private UserInfoString _userInfo;
     private readonly SplitPacketReassembler _splitReassembler = new();
     private static readonly string? _messageDumpPath = Environment.GetEnvironmentVariable("GOLDSRC_MSGDUMP");
@@ -103,11 +105,11 @@ public partial class GoldsrcConnection : IDisposable
     /// </summary>
     public uint SpawnCount
     {
-        get => ActiveSession?.Context.SpawnCount ?? 0;
-        set => ActiveSession?.Context.SpawnCount = value;
+        get => ActiveSession?.Data.SpawnCount ?? 0;
+        set => ActiveSession?.Data.SpawnCount = value;
     }
 
-    /// <summary>A task that completes when the connection handshake reaches <see cref="SessionState.Connected"/>.</summary>
+    /// <summary>A task that completes when the connection handshake reaches <see cref="Protocol.SessionState.Connected"/>.</summary>
     public Task Connected => _connectedTcs.Task;
 
     /// <summary>
@@ -153,23 +155,19 @@ public partial class GoldsrcConnection : IDisposable
     /// <param name="engineVariant">Engine-branch wire dialect; defaults to the standard Valve branch.
     /// Pass the profile's variant when connecting to a different branch
     /// (e.g. <see cref="EngineVariants.SvenCoop"/>).</param>
-    /// <param name="localPort">Local UDP port to bind (0 = OS-assigned).</param>
+    /// <param name="localPort">Local UDP port to bind (0 = OS-assigned); ignored when <paramref name="transport"/> is supplied.</param>
+    /// <param name="transport">UDP transport seam; defaults to a real socket. Tests inject a fake
+    /// to drive the receive loop without network I/O.</param>
     public GoldsrcConnection(ILogger<GoldsrcConnection>? logger = null, ISteamAuthProvider? authProvider = null,
-        IServerMessageHandler? messageHandler = null, IEngineVariant? engineVariant = null, int localPort = 0)
+        IServerMessageHandler? messageHandler = null, IEngineVariant? engineVariant = null, int localPort = 0,
+        ITransport? transport = null)
     {
         Logger = logger ?? NullLogger<GoldsrcConnection>.Instance;
         _authProvider = authProvider ?? new NoSteamAuthProvider();
         _messageHandler = messageHandler ?? new DefaultServerMessageHandler();
         _variant = engineVariant ?? EngineVariants.Valve;
-        _socket = new UdpClient(localPort);
-        // The signon burst (delta descriptions + resource list + spawn baselines
-        // ≈ 150 KB compressed, delivered in fast bursts) plus the per-frame
-        // unreliable traffic must fit in the OS socket buffer while the receive
-        // loop is momentarily busy; a small buffer silently drops datagrams,
-        // which stalls the reliable-stream acknowledgement and ends in a
-        // "Reliable channel overflowed" drop.
-        _socket.Client.ReceiveBufferSize = 4 * 1024 * 1024;
-        _sendPacket = (buffer, target, token) => _socket.SendAsync(buffer, target, token).AsTask();
+        _transport = transport ?? new UdpTransport(localPort);
+        _sendPacket = (buffer, target, token) => _transport.SendAsync(buffer, target, token);
         _handshake = new HandshakeNegotiator(_authProvider, Settings, _sendPacket, Logger);
         _userInfo = new UserInfoString(Settings.DefaultUserInfo);
         AttachProtocolBehaviors();
@@ -251,7 +249,7 @@ public partial class GoldsrcConnection : IDisposable
         _sessions[ep] = session;
 
         Logger.LogDebug($"[State] Begin -> GetChallenge. Sending getchallenge (steam={_authProvider.IsAvailable}, authProto={_authProvider.GetAuthProtocol()})");
-        await _socket.SendAsync(_handshake.BuildGetChallengePacket(_authProvider.IsAvailable), ep, ct);
+        await _transport.SendAsync(_handshake.BuildGetChallengePacket(_authProvider.IsAvailable), ep, ct);
 
         StartKeepAliveTask();
 
@@ -329,7 +327,7 @@ public partial class GoldsrcConnection : IDisposable
                 var payload = System.Text.Encoding.UTF8.GetString(data, offset, len - offset);
                 Logger.LogDebug($"connectionless: {payload[..Math.Min(payload.Length, 200)]}");
                 session.State = await _handshake.HandleResponseAsync(
-                    session.State, ep, appId, _userInfo.ToString(), session.Context, payload, SendStringCmdAsync, ct);
+                    session.State, ep, appId, _userInfo.ToString(), session.Handshake, payload, SendStringCmdAsync, ct);
                 if (session.State == SessionState.Connected)
                 {
                     Logger.LogInformation("[State] -> Connected. Handshake complete.");
@@ -363,15 +361,13 @@ public partial class GoldsrcConnection : IDisposable
             while (!ct.IsCancellationRequested)
             {
                 Logger.LogTrace("[Loop] waiting for packet...");
-                var result = await _socket.ReceiveAsync(ct);
-                var data = result.Buffer;
-                var from = result.RemoteEndPoint;
+                var (data, from) = await _transport.ReceiveAsync(ct);
 
                 Logger.LogTrace($"[Loop] received {data.Length} bytes from {from}");
                 if (!ep.Equals(from)) continue;
                 if (data.Length < 4) continue;
 
-                await HandleDatagramAsync(data.ToArray());
+                await HandleDatagramAsync(data);
             }
         }
         finally
@@ -384,17 +380,18 @@ public partial class GoldsrcConnection : IDisposable
         }
     }
 
-    /// <summary>Builds the per-session parse pipeline: fresh parser closures over
-    /// the session context and a fresh runtime user-message registry.</summary>
+    /// <summary>Builds one session: fresh parser closures over the session data, a
+    /// fresh runtime user-message registry, and the signon state machine.</summary>
     private Session CreateSession(IPEndPoint ep)
     {
-        var ctx = new ConnectionContext
-        {
-            ServerIp = BitConverter.ToUInt32(ep.Address.GetAddressBytes()),
-            ServerPort = (ushort)ep.Port
-        };
+        uint serverIp = BitConverter.ToUInt32(ep.Address.GetAddressBytes());
+        ushort serverPort = (ushort)ep.Port;
+        var data = new SessionData();
+        var handshake = new HandshakeState { ServerIp = serverIp, ServerPort = serverPort };
+        var signon = new SignonController(_variant, SendStringCmdAsync, SendCommandAsync, logger: Logger);
+
         var builder = new ParserRegistry.Builder();
-        EngineMessageParsers.Register(builder, _variant, ctx);
+        EngineMessageParsers.Register(builder, _variant, data);
         var pipeline = new MessagePipeline(builder.Build(), new Game.UserMessageRegistry(), Messages, Logger)
         {
             // Legacy hook so game handler chains keep working until the
@@ -403,9 +400,11 @@ public partial class GoldsrcConnection : IDisposable
         };
         return new Session
         {
-            Context = ctx,
+            Handshake = handshake,
+            Data = data,
             Channel = new NetchanChannel(ep, _sendPacket, Logger, _variant),
             Pipeline = pipeline,
+            Signon = signon,
         };
     }
 
@@ -414,7 +413,7 @@ public partial class GoldsrcConnection : IDisposable
     {
         _keepAliveCts?.Cancel();
         _keepAliveCts?.Dispose();
-        _socket.Dispose();
+        _transport.Dispose();
     }
 
     private Task SendReliableAsync(byte[] payload, CancellationToken ct)

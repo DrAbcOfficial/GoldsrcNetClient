@@ -1,7 +1,6 @@
 using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Handshake;
-using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Messages.Engine;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;

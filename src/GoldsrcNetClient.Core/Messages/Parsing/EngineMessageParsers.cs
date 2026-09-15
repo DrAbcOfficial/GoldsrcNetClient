@@ -11,7 +11,7 @@ namespace GoldsrcNetClient.Core.Messages.Parsing;
 /// The built-in engine (<c>svc_*</c>) message parsers — the client's complete
 /// protocol-48 vocabulary. Registration captures the engine-branch dialect
 /// (<see cref="IEngineVariant"/>) and the session state the bit-level parsers
-/// need (<see cref="ConnectionContext"/> delta tables and client count), so
+/// need (<see cref="SessionData"/> delta tables and client count), so
 /// every entry is a pure <c>reader → message</c> function.
 /// </summary>
 /// <remarks>
@@ -26,7 +26,7 @@ public static class EngineMessageParsers
     /// building the <see cref="ParserRegistry"/>; later registrations replace
     /// earlier ones, so game profiles can override individual slots.
     /// </summary>
-    public static void Register(ParserRegistry.Builder builder, IEngineVariant variant, ConnectionContext ctx)
+    public static void Register(ParserRegistry.Builder builder, IEngineVariant variant, SessionData state)
     {
         // The Sven Co-op engine branch repurposes the legacy svc_foundsecret slot as a
         // string-carrying message; on Valve branches the slot carries no payload.
@@ -71,9 +71,9 @@ public static class EngineMessageParsers
             })
             .AddEngine((byte)ServerMessageType.ResourceRequest, static (ref BufferReader r) =>
                 new ResourceRequestMessage(r.ReadUInt32(), r.ReadUInt32()))
-            .AddEngine((byte)ServerMessageType.ResourceList, (ref BufferReader r) => ParseResourceList(ref r, variant, ctx))
-            .AddEngine((byte)ServerMessageType.SpawnBaseline, (ref BufferReader r) => ParseSpawnBaseline(ref r, variant, ctx))
-            .AddEngine((byte)ServerMessageType.ClientData, (ref BufferReader r) => ParseClientData(ref r, variant, ctx))
+            .AddEngine((byte)ServerMessageType.ResourceList, (ref BufferReader r) => ParseResourceList(ref r, variant, state))
+            .AddEngine((byte)ServerMessageType.SpawnBaseline, (ref BufferReader r) => ParseSpawnBaseline(ref r, variant, state))
+            .AddEngine((byte)ServerMessageType.ClientData, (ref BufferReader r) => ParseClientData(ref r, variant, state))
             .AddEngine((byte)ServerMessageType.SignOnNum, static (ref BufferReader r) => new SignOnNumMessage(r.ReadUInt8()))
             .AddEngine((byte)ServerMessageType.VoiceInit, static (ref BufferReader r) => new VoiceInitMessage(r.ReadString(), r.ReadUInt8()))
             .AddEngine((byte)ServerMessageType.Customization, static (ref BufferReader r) =>
@@ -84,8 +84,8 @@ public static class EngineMessageParsers
                 r.Skip(2 + 4 + 1);
                 return new CustomizationMessage(playerSlot, resourceType, name);
             })
-            .AddEngine((byte)ServerMessageType.Event, (ref BufferReader r) => ParseEvent(ref r, variant, ctx, reliable: false))
-            .AddEngine((byte)ServerMessageType.EventReliable, (ref BufferReader r) => ParseEvent(ref r, variant, ctx, reliable: true))
+            .AddEngine((byte)ServerMessageType.Event, (ref BufferReader r) => ParseEvent(ref r, variant, state, reliable: false))
+            .AddEngine((byte)ServerMessageType.EventReliable, (ref BufferReader r) => ParseEvent(ref r, variant, state, reliable: true))
             .AddEngine((byte)ServerMessageType.Sound, (ref BufferReader r) => ParseSound(ref r, variant))
             .AddEngine((byte)ServerMessageType.Pings, static (ref BufferReader r) =>
             {
@@ -135,7 +135,12 @@ public static class EngineMessageParsers
             })
             .AddEngine((byte)ServerMessageType.CdTrack, static (ref BufferReader r) => new CdTrackMessage(r.ReadUInt8(), r.ReadUInt8()))
             .AddEngine((byte)ServerMessageType.WeaponAnim, static (ref BufferReader r) => new WeaponAnimMessage(r.ReadUInt8(), r.ReadUInt8()))
-            .AddEngine((byte)ServerMessageType.SetPause, static (ref BufferReader r) => new SetPauseMessage(r.ReadBits(1) != 0));
+            .AddEngine((byte)ServerMessageType.SetPause, static (ref BufferReader r) =>
+            {
+                bool paused = r.ReadBits(1) != 0;
+                r.Align();
+                return new SetPauseMessage(paused);
+            });
 
         // Messages consumed without interpretation: no-payload slots, fixed-size
         // skips, and the opaque flood messages (their length is the packet tail).
@@ -241,7 +246,7 @@ public static class EngineMessageParsers
     /// consistency list. The raw payload is captured for the echo-back reply
     /// (real-client behavior on svc_resourcerequest).
     /// </summary>
-    private static ResourceListMessage ParseResourceList(ref BufferReader reader, IEngineVariant variant, ConnectionContext ctx)
+    private static ResourceListMessage ParseResourceList(ref BufferReader reader, IEngineVariant variant, SessionData state)
     {
         // Field widths follow the engine branch (Ghidra: SV_SendResources
         // FUN_01da4200 / consistency FUN_01db83a0 in hw.dll build 10257):
@@ -298,7 +303,7 @@ public static class EngineMessageParsers
     /// end marker, then six-bit-count extra baselines. Sven widened the entity
     /// number to 13 bits (wire-verified); Valve keeps 11.
     /// </summary>
-    private static SpawnBaselineMessage ParseSpawnBaseline(ref BufferReader reader, IEngineVariant variant, ConnectionContext ctx)
+    private static SpawnBaselineMessage ParseSpawnBaseline(ref BufferReader reader, IEngineVariant variant, SessionData state)
     {
         if (Environment.GetEnvironmentVariable("GOLDSRC_SKIPBASELINE") == "1")
         {
@@ -320,17 +325,17 @@ public static class EngineMessageParsers
 
             uint entityType = reader.ReadBits(2);
             DeltaType dt = (entityType & 1) != 0
-                ? ResolveDelta(ctx, entityNumber >= 1 && entityNumber <= ctx.MaxClients
+                ? ResolveDelta(state, entityNumber >= 1 && entityNumber <= state.MaxClients
                     ? DeltaDefinitions.EntityStatePlayer
                     : DeltaDefinitions.EntityState)
-                : ResolveDelta(ctx, DeltaDefinitions.CustomEntityState);
+                : ResolveDelta(state, DeltaDefinitions.CustomEntityState);
 
             DeltaReader.ReadFields(dt, ref reader, variant.DeltaByteCountBits);
             entityCount++;
         }
 
         uint baselineCount = reader.ReadBits(6);
-        var baselineDelta = ResolveDelta(ctx, DeltaDefinitions.EntityState);
+        var baselineDelta = ResolveDelta(state, DeltaDefinitions.EntityState);
         for (uint ei = 0; ei < baselineCount; ei++)
             DeltaReader.ReadFields(baselineDelta, ref reader, variant.DeltaByteCountBits);
 
@@ -338,13 +343,13 @@ public static class EngineMessageParsers
         return new SpawnBaselineMessage(entityCount);
     }
 
-    private static ClientDataMessage ParseClientData(ref BufferReader reader, IEngineVariant variant, ConnectionContext ctx)
+    private static ClientDataMessage ParseClientData(ref BufferReader reader, IEngineVariant variant, SessionData state)
     {
         if (reader.ReadBits(1) != 0)
             reader.ReadBits(8); // delta sequence
-        DeltaReader.ReadFields(ResolveDelta(ctx, DeltaDefinitions.ClientData), ref reader, variant.DeltaByteCountBits);
+        DeltaReader.ReadFields(ResolveDelta(state, DeltaDefinitions.ClientData), ref reader, variant.DeltaByteCountBits);
 
-        var weaponDelta = ResolveDelta(ctx, DeltaDefinitions.WeaponData);
+        var weaponDelta = ResolveDelta(state, DeltaDefinitions.WeaponData);
         int weaponCount = 0;
         while (reader.ReadBits(1) != 0)
         {
@@ -361,9 +366,9 @@ public static class EngineMessageParsers
     /// packet index, optional event_args delta, optional 16-bit fire time.
     /// svc_event_reliable drops the count and packet index.
     /// </summary>
-    private static EventMessage ParseEvent(ref BufferReader reader, IEngineVariant variant, ConnectionContext ctx, bool reliable)
+    private static EventMessage ParseEvent(ref BufferReader reader, IEngineVariant variant, SessionData state, bool reliable)
     {
-        var eventDelta = ResolveDelta(ctx, DeltaDefinitions.Event);
+        var eventDelta = ResolveDelta(state, DeltaDefinitions.Event);
         uint count = reliable ? 1 : reader.ReadBits(5);
         uint last = 0;
         for (uint e = 0; e < count; e++)
@@ -428,6 +433,6 @@ public static class EngineMessageParsers
     /// Resolves the live delta table received via svc_deltadescription, falling
     /// back to the compiled Valve layout when the server has not sent one.
     /// </summary>
-    private static DeltaType ResolveDelta(ConnectionContext ctx, DeltaType fallback)
-        => ctx.DeltaTables.TryGetValue(fallback.DeltaName, out var dt) ? dt : fallback;
+    private static DeltaType ResolveDelta(SessionData state, DeltaType fallback)
+        => state.DeltaTables.TryGetValue(fallback.DeltaName, out var dt) ? dt : fallback;
 }

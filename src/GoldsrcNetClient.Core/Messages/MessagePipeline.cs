@@ -77,7 +77,16 @@ public sealed class MessagePipeline
         var reader = new BufferReader(data);
         while (reader.Remaining > 0)
         {
-            byte type = reader.ReadUInt8();
+            byte type;
+            try
+            {
+                type = reader.ReadUInt8();
+            }
+            catch (EndOfBufferException)
+            {
+                _logger.LogWarning("[Pipeline] truncated message type byte; discarding packet tail");
+                return;
+            }
 
             if (_interceptor?.Invoke(type, ref reader) == true)
                 continue; // fully handled by the legacy hook

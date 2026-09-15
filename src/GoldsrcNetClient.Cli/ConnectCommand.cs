@@ -7,7 +7,6 @@ using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using GoldsrcNetClient.Core.Io;
-using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Messages.Engine;
 using GoldsrcNetClient.SteamProvider;
 using Microsoft.Extensions.Logging;

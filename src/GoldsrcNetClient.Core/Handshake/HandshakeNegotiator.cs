@@ -66,7 +66,7 @@ public sealed class HandshakeNegotiator(
         IPEndPoint endpoint,
         uint appId,
         string userInfo,
-        ConnectionContext ctx,
+        HandshakeState ctx,
         string payload,
         Func<ClientCommandType, string, CancellationToken, Task> sendStringCmd,
         CancellationToken ct)
@@ -161,7 +161,7 @@ public sealed class HandshakeNegotiator(
         return end > 0 && ulong.TryParse(token[..end], out ulong value) ? value : 0;
     }
 
-    private byte[] BuildConnectPacket(ConnectionContext ctx, uint appId, string userInfo)
+    private byte[] BuildConnectPacket(HandshakeState ctx, uint appId, string userInfo)
     {
         var challengeStr = Encoding.UTF8.GetString(ctx.Challenge);
         var authProto = ctx.AuthProtocol;
