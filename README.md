@@ -33,18 +33,18 @@ and death notices are printed live.
 
 ```
 Core/
-  Network/       GoldsrcConnection (orchestrator, split by responsibility into partials):
-                 socket/receive loop, svc dispatch table, signon flow, entity parsers,
-                 resourcelist; SplitPacketReassembler, TimerResolution
-  Handshake/     connection establishment (challenge, connect packet, auth ticket interface)
-  Netchan/       sequenced channel: reliability, evidence-based retransmission, fragments, Munge2
-  Messages/      message reader/writer, constants, IServerMessageHandler hook
-  Delta/         delta-compression definitions, bitstream reader, delta type vocabulary
-  Protocol/      enums, wire structs, settings, EngineVariant dialects, UserInfoString, UserCmd
-  Game/          per-game login profiles and user-message handlers
-  Munge/         Munge1/2/3 ciphers
-  Query/         A2S_INFO server query
-  Util/          bit-level reader/writer, span helpers
+  Io/            byte/bit codec: BufferReader/BufferWriter (one position, span-based)
+  Messages/      typed message records, MessageHub (Subscribe<T>), MessagePipeline,
+                 ParserRegistry, Engine/ + Users/ message sets
+  Network/       GoldsrcConnection (receive loop, send API, hub), SignonController,
+                 connection factory, transport seam, split-packet reassembly
+  Handshake/     connection establishment (challenge, connect packet, auth ticket)
+  Netchan/       sequenced channel: reliability, fragments, Munge2
+  Delta/         delta-compression definitions and reader
+  Protocol/      enums, wire structs, EngineVariant dialects, UserInfoString, UserCmd
+  Game/          IGameProfile + GameProfileResolver (per-mod profiles)
+  DependencyInjection/  AddGoldsrcClient / AddGameProfile
+  Munge/ Query/  Munge ciphers; A2S_INFO query
 ```
 
 ## Features
@@ -60,13 +60,14 @@ Core/
 - Full signon flow: serverinfo, delta descriptions (meta-delta field encoding),
   movevars, user-message registration, resourcelist (bit-packed parsing),
   resourcerequest reply, `spawn <count> <munged CRC>`, `sendents`
-- Console (`svc_print`), chat (`SayText`), `TextMsg`, `DeathMsg` events
+- Typed message hub (`connection.Subscribe<TMessage>()`) for every engine and user
+  message; `Print`/`SayText`/`TextMsg`/`DeathMsg` and the full Sven Co-op set included
 - `ReqState` user message answered with `VModEnable 1` (voice-manager handshake)
 - Auto-reconnect (`--reconnect <seconds>`) — with the SteamAPI pipeline reconnects
   are seamless (no re-login)
-- Per-game login profiles (`IGameLoginProvider` registry): Half-Life, Counter-Strike,
+- Per-game profiles (`IGameProfile`, DI-registered): Half-Life, Counter-Strike,
   Condition Zero, Sven Co-op — each supplies AppId, default userinfo, an
-  `IEngineVariant` wire dialect and a message handler; register custom providers for
+  `IEngineVariant` wire dialect, and its message parsers; register custom profiles for
   other GoldSrc-branch games without touching the protocol code
 
 ## Engine variants and mod support
@@ -77,10 +78,11 @@ captured in the `IEngineVariant` abstraction (`Protocol/EngineVariant.cs`). The
 protocol machinery consumes the abstraction; built-in dialects are
 `EngineVariants.Valve` and `EngineVariants.SvenCoop`.
 
-Supporting a new mod or engine branch needs no protocol changes:
+Supporting a new mod or engine branch means writing one profile class — no protocol
+changes, no event declarations, no dispatch switch:
 
 ```csharp
-public sealed class MyModLoginProvider : BaseGameLoginProvider
+public sealed class MyModProfile : GameProfileBase
 {
     public override string Id => "mymod";
     public override string DisplayName => "My Mod";
@@ -92,11 +94,32 @@ public sealed class MyModLoginProvider : BaseGameLoginProvider
         EntityIndexBits = 13,
         // ...only what differs
     };
-    public override IServerMessageHandler CreateMessageHandler() => new MyModMessageHandler();
+
+    public override void RegisterMessages(ParserRegistry.Builder builder)
+    {
+        HalfLifeMessages.Register(builder);          // inherit the shared vocabulary
+        builder.AddUser("MyMessage", static (ref BufferReader r) => new MyMessage(r.ReadUInt8()));
+    }
 }
 
-GameLoginProviders.Register(new MyModLoginProvider());
+// Composition root
+services.AddGoldsrcClient().AddGameProfile<MyModProfile>();
+
+// Consume typed messages
+connection.Subscribe<MyMessage>(m => Console.WriteLine(m.Value));
 ```
+
+### Consuming messages
+
+Parsed messages are published by type through `connection.Messages`:
+
+```csharp
+using var chat = connection.Subscribe<SayTextMessage>(m => Console.WriteLine($"[Chat] {m.Message}"));
+using var print = connection.Subscribe<PrintMessage>(m => Console.WriteLine(m.Text));
+```
+
+Unregistered user messages arrive as `RawUserMessage` with their bytes intact, so a
+consumer can still parse mod messages the profile does not know about.
 
 ## Commands
 

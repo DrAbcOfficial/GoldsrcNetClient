@@ -33,121 +33,107 @@ src/
 
 ## Core Architecture
 
-Layering (dependencies point one way): `Protocol` ← `Messages`/`Netchan`/`Delta` ←
-`Network` ← `Game`; composition roots (Cli, Tui) resolve profiles and wire everything.
+Dependencies point one way: `Io` → `Protocol`/`Delta` → `Messages` → `Network` →
+`Game`/profiles; the application (CLI/TUI) is the composition root.
 
 ```
 Core/
-  Network/                          # the connection orchestrator (one class, partial files)
-    GoldsrcConnection.cs            #   UDP socket, receive loop, keepalive, public send API, events
-    GoldsrcConnection.Dispatch.cs   #   message loop + table-driven svc dispatch + simple parsers
-    GoldsrcConnection.Signon.cs     #   serverinfo → sendres → spawn <count> <crc> → sendents flow
-    GoldsrcConnection.Entities.cs   #   bitstream parsers: delta descriptions, baselines, clientdata, events, sounds
-    GoldsrcConnection.Resources.cs  #   svc_resourcelist bit parsing (+ echo-back payload)
-    ConnectionContext.cs            #   per-session data (challenge, spawn count, CRC, resources)
-    SplitPacketReassembler.cs       #   UDP-level split (NET_GetLong) reassembly
-    TimerResolution.cs              #   winmm timeBeginPeriod(1) ref-counted helper
-  Handshake/                        # connection establishment
-    HandshakeNegotiator.cs          #   challenge parse, connect packet build, approval → "new"
-    ISteamAuthProvider.cs           #   auth ticket abstraction (+ NoSteamAuthProvider default)
-  Netchan/
-    NetchanChannel.cs               # sequenced channel: flags, ack/evidence-based retransmit, BZ2
-    FragmentStream.cs               # per-stream fragment reassembly
+  Io/                               # byte/bit codec (ref structs over spans)
+    BufferReader.cs                 #   unified byte+bit reader (engine bf_read), one bit position
+    BufferWriter.cs                 #   growable byte+bit writer
+    EndOfBufferException.cs         #   underflow -> discard rest of packet
+    HexExtensions.cs                #   ToHexPreview for logs
   Messages/
-    MessageReader.cs                #   byte-level reads (+ ReadStruct<T> overlay helper)
-    MessageWriter.cs                #   byte-level writes
-    MessageConstants.cs             #   header markers, sequence flags/mask
-    IServerMessageHandler.cs        #   DI hook (+ DefaultServerMessageHandler no-op)
-  Delta/
-    DeltaTypes.cs                   #   DeltaField/DeltaType/DeltaFieldDescription vocabulary
-    DeltaDefinitions.cs             #   predefined delta types (fallbacks for svc_deltadescription)
-    DeltaReader.cs                  #   delta record skipping + meta field description reader
-  Protocol/                         # wire-format vocabulary (knows no game identities)
-    EngineVariant.cs                #   IEngineVariant dialect abstraction + Valve/SvenCoop instances
-    Enums.cs / Structs.cs / GoldsrcEngineSettings.cs
-    UserInfoString.cs               #   \key\value userinfo parse/build
-    UserCmd.cs                      #   clc_move payload encoder
-    TempEntityParser.cs             #   svc_tempentity bitstream skipper
-  Game/                             # per-game profiles + user-message handlers
-    IGameLoginProvider.cs           #   profile interface + registry + built-in providers
-    GameMessageHandler.cs, HalfLifeMessageHandler.cs,
-    CounterStrikeMessageHandler.cs, SvenCoopMessageHandler.cs,
-    GameEventData.cs, UserMessageRegistry.cs
-  Munge/Munge.cs                    # Munge1/2/3 XOR ciphers (one shared transform core)
-  Query/A2SQuerier.cs               # A2S_INFO server query (GoldSrc + Source replies)
-  Util/BitReader.cs, BitWriter.cs, ByteSpanExtensions.cs
+    IServerMessage.cs               # marker for every parsed message (engine + user)
+    MessageHub.cs                   # typed pub/sub: Subscribe<T>(Action<T>)
+    MessagePipeline.cs              # packet -> parser -> hub; user-message framing
+    RawUserMessage.cs               # user message with no registered parser
+    Engine/EngineMessages.cs        # one record per svc_* (Print, ServerInfo, ...)
+    Users/                          # one record per user message + the game message sets
+      UserMessages.cs               #   all user-message records (HL/CS/Sven)
+      HalfLifeMessages.cs           #   Register(builder) - shared base vocabulary
+      CounterStrikeMessages.cs      #   Register(builder) - CS on top of HL
+      SvenCoopMessages.cs           #   Register(builder) - Sven on top of HL (73 parsers)
+    Parsing/ParserRegistry.cs       # 256-slot engine table + name-keyed user parsers (replace semantics)
+    Parsing/EngineMessageParsers.cs #   the built-in svc_* parsers (branch-aware)
+  Network/
+    GoldsrcConnection.cs            # UDP receive loop, keepalive, send API, Messages hub
+    GoldsrcConnection.Behaviors.cs  #   protocol-internal replies (userinfo, cvars, registry feed)
+    GoldsrcConnectionFactory.cs     # IGoldsrcConnectionFactory (from DI)
+    SignonController.cs             #   signon state machine (sendres -> spawn -> sendents)
+    HandshakeState.cs / SessionData.cs  # handshake vs connected-session state
+    Transport.cs                    # ITransport + UdpTransport (socket seam for tests)
+    SplitPacketReassembler.cs / TimerResolution.cs
+  Handshake/                        # getchallenge -> connect -> approval
+  Netchan/                          # sequenced channel: reliability, fragments, Munge2
+  Delta/                            # delta definitions, reader, meta field descriptions
+  Protocol/                         # enums, wire structs, EngineVariant dialect, UserInfoString, UserCmd
+  Game/
+    IGameProfile.cs                 # per-mod profile: Id/AppId/dialect + RegisterMessages + AttachSession
+    GameProfileResolver.cs          # id/appId resolution over the DI-registered profiles
+  DependencyInjection/GoldsrcServiceCollectionExtensions.cs  # AddGoldsrcClient / AddGameProfile
+  Munge/ Query/                     # Munge ciphers; A2S_INFO query
 ```
 
-- Namespace convention: `GoldsrcNetClient.Core.{Folder}`.
-- File-scoped namespaces, `ImplicitUsings`, `Nullable=enable` on all projects.
-  Style: C# 14 (primary constructors, collection expressions, `System.Threading.Lock`,
-  `extension` members — see `ByteSpanExtensions`, null-conditional assignment).
+### Messages and DI (the extension seam)
 
-### GoldsrcConnection (Core/Network/)
+- **Parsing**: each message is a record implementing `IServerMessage`. Engine messages
+  live in `Messages/Engine/`, user messages in `Messages/Users/`. A parser is
+  `static (ref BufferReader) => new XMessage(...)`, registered through
+  `ParserRegistry.Builder` — `AddEngine(typeByte, parser)` for `svc_*`,
+  `AddUser(name, parser)` for server-registered user messages. **Re-registering a
+  slot replaces it**, which is exactly how Sven Co-op overrides the shared
+  Half-Life layouts with its own wider wire formats.
+- **Consuming**: subscribe by type — `connection.Subscribe<SayTextMessage>(m => ...)`
+  (or `connection.Messages.Subscribe<...>`). There are no per-message C# events and
+  no god handler classes; adding a mod message is one record plus one `AddUser` line.
+  Unregistered user messages arrive as `RawUserMessage` (raw bytes preserved).
+- **Error semantics** (engine-faithful): an unknown engine type byte, or a
+  truncated/malformed message (`EndOfBufferException`/`InvalidDataException`),
+  discards the remainder of the packet. User messages are framed first, so a
+  mis-parsing user-message parser can never desynchronise the stream.
+- **Profiles**: `IGameProfile` bundles `Id`, `DisplayName`, `AppId`,
+  `DefaultUserInfo`, `EngineVariant`, `RegisterMessages(builder)`, and optional
+  `AttachSession(connection)` (session behavior such as Half-Life's `VModEnable 1`
+  answer to `ReqState`). Built-ins: `HalfLifeProfile`, `CounterStrikeProfile`,
+  `ConditionZeroProfile`, `SvenCoopProfile`. Register with `AddGameProfile<T>()`;
+  resolve through `IGameProfileResolver` (no static registry).
+- **DI**: Core references only `Microsoft.Extensions.DependencyInjection.Abstractions`.
+  `AddGoldsrcClient(o => ...)` registers the built-in profiles, the resolver, and
+  `IGoldsrcConnectionFactory`; the application owns the container
+  (`BuildServiceProvider()`). Services the library does not assume are optional
+  (`ILogger`, `ISteamAuthProvider`, `ITransport`).
 
-The connection is a thin orchestrator; each responsibility lives in its own class or
-partial file:
+### Engine variants
 
-- `HandshakeNegotiator` — the whole getchallenge → connect → approval state machine.
-- `NetchanChannel` (one per server endpoint) — owns sequencing/reliability state AND
-  behavior (the engine's `netchan_t`): duplicate suppression, reliable-message ack +
-  evidence-based retransmission, fragment reassembly, unconditional Munge2
-  encrypt/decrypt (per variant), svc_nop padding, ack-per-packet cadence.
-  - Reliable ack bit semantics: the server toggles its counter once per NEW
-    reliable message; our ack bit mirrors the toggle per received reliable packet.
-    Retransmission fires only on evidence of loss (later packet acked, parity still
-    mismatched), matching the engine's `Netchan_Transmit`.
-- `GoldsrcConnection.Dispatch.cs` — table-driven dispatch
-  (`Dictionary<byte, MessageParser>`): each svc message has one parser entry;
-  `false` return discards the rest of the packet (buffer overflow).
-- `GoldsrcConnection.Resources.cs` — svc_resourcelist bit parsing; the raw payload
-  is echoed back on svc_resourcerequest (real-client behavior).
-- Per-message observation goes through events (`OnConsolePrint`, `OnCenterPrint`,
-  `OnServerInfo`, `OnServerDisconnect`, ...). Consumers should subscribe to events
-  instead of intercepting built-in-handled messages in an `IServerMessageHandler`.
-
-### Engine variants & game profiles (the extension seam)
-
-- `Protocol/IEngineVariant` abstracts every engine-branch wire difference: netchan
-  Munge2 on/off, fragment field widths, delta byte-count prefix (3/4 bits), entity
-  index bits (11/13), resource/consistency index bits, coordinate encoding, and
-  which CRCs travel plaintext. The protocol layer consumes the abstraction only —
-  it never branches on game names.
-- Built-in dialects: `EngineVariants.Valve` and `EngineVariants.SvenCoop`. New
-  branches: `new EngineVariant { ... }` overrides.
-- `Game/IGameLoginProvider` is the per-mod profile: `Id`, `DisplayName`, `AppId`,
-  `DefaultUserInfo`, `EngineVariant`, and a `CreateMessageHandler()` factory.
-  `GameLoginProviders.Register/Resolve/GetByAppId` is the registry; the CLI's
-  `--game` / `--appid` options resolve through it, and Cli/Tui pass
-  `profile.EngineVariant` into the connection. Supporting a new mod = registering a
-  provider — no protocol changes. The Steam login path (`ISteamAuthProvider`) is
-  game-agnostic and takes the profile's AppId.
-
-### Handshake / auth
-
-- `ISteamAuthProvider` produces the ticket; `NoSteamAuthProvider` sends a fake key.
-- Challenge parsing tolerates trailing chars on numeric tokens (server SteamID).
-
-### Session data
-
-`ConnectionContext` holds only session data (challenge, spawn count, worldmap CRC,
-resources, SteamID...). All netchan/sequencing state lives in `NetchanChannel`.
+`IEngineVariant` abstracts every engine-branch wire difference (netchan encryption,
+fragment field widths, delta/entity/resource bit widths, coordinate encoding, which
+CRCs travel plaintext). The protocol layer consumes the abstraction only — it never
+branches on game names. Built-ins: `EngineVariants.Valve` and
+`EngineVariants.SvenCoop`; new branches are `new EngineVariant { ... }` overrides
+returned from a profile.
 
 ### Encoding details
 
-- Struct marshalling: `MessageReader.ReadStruct<T>()` overlays blittable
-  `StructLayout(LayoutKind.Sequential, Pack=1)` structs on the wire bytes. Core has
+- **Io**: `BufferReader`/`BufferWriter` are ref structs over spans with a single
+  absolute bit position, mirroring the engine's `bf_read`/`Sizebuf`. Byte and bit
+  reads mix freely (byte reads take an aligned fast path and fall back to the bit
+  path when unaligned) — there is no manual `bitIdx = reader.Offset * 8` bridging.
+  All reads throw `EndOfBufferException` on underflow; there are no 0-on-overflow
+  primitives.
+- **Struct marshalling**: `BufferReader.ReadStruct<T>()` overlays blittable
+  `StructLayout(LayoutKind.Sequential, Pack=1)` structs via `MemoryMarshal`. Core has
   `AllowUnsafeBlocks=true`.
-- Encryption: Munge2 (connected packets, key = seq & 0xFF, applied to the whole body
-  including svc_nop padding), Munge3 (worldmap CRC, 8-bit key `(-1 - playernum) & 0xFF`;
-  the spawn echo re-munges with `(-1 - spawnCount) & 0xFF`). Valve branches only —
-  variants with plaintext CRCs skip both passes.
-- Delta compression: predefined delta types in `Delta/DeltaDefinitions.cs` are the
+- **Encryption**: Munge2 (connected packets, key = seq & 0xFF, applied to the whole
+  body including svc_nop padding), Munge3 (worldmap CRC, 8-bit key
+  `(-1 - playernum) & 0xFF`; the spawn echo re-munges with `(-1 - spawnCount) & 0xFF`).
+  Valve branches only — variants with plaintext CRCs skip both passes.
+- **Delta compression**: predefined delta types in `Delta/DeltaDefinitions.cs` are the
   fallbacks; the live tables received via svc_deltadescription (stored in
-  `ConnectionContext.DeltaTables`) always win, which is what makes Sven Co-op's
-  divergent structures work without protocol changes.
-- Bit readers (`BitReader`) use ABSOLUTE bit indexes into the buffer — handlers must
-  seed `bitIdx = reader.Offset * 8` and convert back with `reader.Offset = (bitIdx + 7) / 8`.
+  `SessionData.DeltaTables`) always win, which is what makes Sven Co-op's divergent
+  structures work without protocol changes.
+- **Strings** are UTF-8 throughout (the original protocol is raw bytes; UTF-8
+  preserves non-ASCII names and CJK chat).
 
 ## Commands
 
