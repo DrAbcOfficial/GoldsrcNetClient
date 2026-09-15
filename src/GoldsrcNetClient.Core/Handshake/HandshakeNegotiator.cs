@@ -219,22 +219,22 @@ public sealed class HandshakeNegotiator(
 
     private static byte[] BuildRawConnectPacket(string connectPrefix, string protoInfo, string userInfo, byte[]? ticketBytes)
     {
-        using var ms = new MemoryStream();
+        // None of the text fields carry a NUL terminator on this wire — write raw UTF-8.
+        var writer = new GoldsrcNetClient.Core.Io.BufferWriter();
+        writer.WriteBytes([0xFF, 0xFF, 0xFF, 0xFF]);
+        writer.WriteBytes(Encoding.UTF8.GetBytes(connectPrefix));
+        writer.WriteUInt8((byte)'\"');
+        writer.WriteBytes(Encoding.UTF8.GetBytes(protoInfo));
+        writer.WriteUInt8((byte)'\"');
+        writer.WriteUInt8((byte)' ');
+        writer.WriteUInt8((byte)'\"');
+        writer.WriteBytes(Encoding.UTF8.GetBytes(userInfo));
+        writer.WriteUInt8((byte)'\"');
+        writer.WriteUInt8((byte)'\n');
 
-        ms.Write([0xFF, 0xFF, 0xFF, 0xFF]);
-        ms.Write(Encoding.UTF8.GetBytes(connectPrefix));
-        ms.WriteByte((byte)'\"');
-        ms.Write(Encoding.UTF8.GetBytes(protoInfo));
-        ms.WriteByte((byte)'\"');
-        ms.WriteByte((byte)' ');
-        ms.WriteByte((byte)'\"');
-        ms.Write(Encoding.UTF8.GetBytes(userInfo));
-        ms.WriteByte((byte)'\"');
-        ms.WriteByte((byte)'\n');
+        if (ticketBytes is { Length: > 0 })
+            writer.WriteBytes(ticketBytes);
 
-        if (ticketBytes != null && ticketBytes.Length > 0)
-            ms.Write(ticketBytes);
-
-        return ms.ToArray();
+        return writer.ToArray();
     }
 }

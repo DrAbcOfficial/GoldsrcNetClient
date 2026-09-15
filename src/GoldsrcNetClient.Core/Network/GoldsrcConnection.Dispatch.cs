@@ -1,6 +1,5 @@
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Protocol;
-using GoldsrcNetClient.Core.Util;
 using Microsoft.Extensions.Logging;
 using System.Net;
 
@@ -8,14 +7,26 @@ namespace GoldsrcNetClient.Core.Network;
 
 /// <summary>
 /// Connected-packet message loop and the table-driven server-message dispatch.
-/// Each entry parses exactly one message; a <c>false</c> return discards the
-/// remainder of the packet (buffer overflow). Signon-flow and entity/bitstream
+/// Each entry parses exactly one message; a <c>false</c> return (or a
+/// <see cref="EndOfBufferException"/>/<see cref="InvalidDataException"/> throw)
+/// discards the remainder of the packet. Signon-flow and entity/bitstream
 /// parsers live in the sibling partial files.
 /// </summary>
 public partial class GoldsrcConnection
 {
     /// <summary>Parses one server message; returning false aborts the rest of the packet (buffer overflow).</summary>
-    internal delegate bool MessageParser(ConnectionContext ctx, MessageReader reader);
+    internal delegate bool MessageParser(ConnectionContext ctx, ref BufferReader reader);
+
+    /// <summary>Cached type names for diagnostics — avoids per-message reflection.</summary>
+    private static readonly string[] MessageTypeNames = BuildMessageTypeNames();
+
+    private static string[] BuildMessageTypeNames()
+    {
+        var names = new string[256];
+        foreach (ServerMessageType value in Enum.GetValues<ServerMessageType>())
+            names[(int)value] = value.ToString();
+        return names;
+    }
 
     private void ProcessConnected(IPEndPoint ep, byte[] data)
     {
@@ -36,32 +47,42 @@ public partial class GoldsrcConnection
             catch { /* diagnostics only */ }
         }
 
-        var reader = new MessageReader(data, data.Length);
+        var reader = new BufferReader(data);
         Logger.LogDebug($"[Connected] processing {data.Length} bytes");
         if (data.Length > 16)
             Logger.LogDebug($"[Connected] head: {data.AsSpan().ToHexPreview(512)}");
 
         while (reader.Remaining > 0)
         {
-            byte dataType = reader.Data[reader.Offset++];
-            string typeName = Enum.IsDefined(typeof(ServerMessageType), dataType) ? ((ServerMessageType)dataType).ToString() : $"0x{dataType:X2}";
+            byte dataType = reader.ReadUInt8();
+            string typeName = MessageTypeNames[dataType] is { } name ? name : $"0x{dataType:X2}";
             Logger.LogDebug($"[Connected] type={typeName} (0x{dataType:X2}), remaining={reader.Remaining}");
 
-            if (_messageHandler.HandleMessage(this, dataType, reader))
-                continue;
-
-            if (!_messageParsers.TryGetValue(dataType, out var parser))
+            try
             {
-                reader.Offset--;
-                Logger.LogWarning($"[Connected] Unknown data type: 0x{dataType:X2} at offset={reader.Offset}, remaining={reader.Remaining}");
+                if (_messageHandler.HandleMessage(this, dataType, ref reader))
+                    continue;
+
+                if (!_messageParsers.TryGetValue(dataType, out var parser))
+                {
+                    reader.BytePosition--; // rewind the type byte for the log offset
+                    Logger.LogWarning($"[Connected] Unknown data type: 0x{dataType:X2} at offset={reader.BytePosition}, remaining={reader.Remaining}");
+                    return;
+                }
+
+                if (!parser(ctx, ref reader))
+                    return;
+            }
+            catch (Exception ex) when (ex is EndOfBufferException or InvalidDataException)
+            {
+                // A truncated or malformed message desynchronises the stream —
+                // discard the rest of the packet, like the engine does.
+                Logger.LogWarning($"[Connected] {typeName} aborted packet: {ex.Message}");
                 return;
             }
-
-            if (!parser(ctx, reader))
-                return;
         }
 
-        Logger.LogDebug($"[Connected] processed all {reader.Size} bytes successfully");
+        Logger.LogDebug($"[Connected] processed all {reader.Length} bytes successfully");
     }
 
     /// <summary>
@@ -73,42 +94,42 @@ public partial class GoldsrcConnection
         // string-carrying message (SV_New_f writes it before the serverinfo banner);
         // on Valve branches the slot is unused and carries no payload.
         MessageParser foundSecret = _variant.FoundSecretHasString
-            ? (_, reader) => { reader.ReadString(); return true; }
-            : (_, _) => true;
+            ? (ctx, ref reader) => { reader.ReadString(); return true; }
+            : (ctx, ref reader) => true;
 
         // Messages whose payload this client cannot interpret structurally: log and
         // consume the rest of the packet so the dispatch loop stays in sync.
-        MessageParser SkipRest(string name) => (_, reader) =>
+        MessageParser SkipRest(string name) => (ctx, ref reader) =>
         {
             Logger.LogDebug($"[{name}] skipping to end of packet ({reader.Remaining} bytes)");
-            reader.Offset = reader.Size;
+            reader.BytePosition = reader.Length;
             return true;
         };
 
         return new()
         {
-        [(byte)ServerMessageType.Nop] = (_, _) => true,
-        [(byte)ServerMessageType.Choke] = (_, _) => true,
-        [(byte)ServerMessageType.KilledMonster] = (_, _) => true,
+        [(byte)ServerMessageType.Nop] = (ctx, ref reader) => true,
+        [(byte)ServerMessageType.Choke] = (ctx, ref reader) => true,
+        [(byte)ServerMessageType.KilledMonster] = (ctx, ref reader) => true,
         [(byte)ServerMessageType.FoundSecret] = foundSecret,
 
-        [(byte)ServerMessageType.Bad] = (_, reader) =>
+        [(byte)ServerMessageType.Bad] = (ctx, ref reader) =>
         {
             Logger.LogWarning("[Bad] server sent bad message, consuming remaining data");
-            reader.Offset = reader.Size;
+            reader.BytePosition = reader.Length;
             return true;
         },
 
-        [(byte)ServerMessageType.Disconnect] = (_, reader) =>
+        [(byte)ServerMessageType.Disconnect] = (ctx, ref reader) =>
         {
             string reason = reader.ReadString();
             Logger.LogWarning($"[Disconnect] server disconnected: reason=\"{reason}\"");
-            reader.Offset = reader.Size;
+            reader.BytePosition = reader.Length;
             OnServerDisconnect?.Invoke(reason);
             return true;
         },
 
-        [(byte)ServerMessageType.Print] = (_, reader) =>
+        [(byte)ServerMessageType.Print] = (ctx, ref reader) =>
         {
             string msg = reader.ReadString();
             Logger.LogDebug($"[Print] msg=\"{msg[..Math.Min(msg.Length, 200)]}\"");
@@ -116,7 +137,7 @@ public partial class GoldsrcConnection
             return true;
         },
 
-        [(byte)ServerMessageType.CenterPrint] = (_, reader) =>
+        [(byte)ServerMessageType.CenterPrint] = (ctx, ref reader) =>
         {
             string centerMsg = reader.ReadString();
             Logger.LogDebug($"[CenterPrint] msg=\"{centerMsg}\"");
@@ -124,85 +145,84 @@ public partial class GoldsrcConnection
             return true;
         },
 
-        [(byte)ServerMessageType.StuffText] = (_, reader) =>
+        [(byte)ServerMessageType.StuffText] = (ctx, ref reader) =>
         {
             string st = reader.ReadString();
             Logger.LogDebug($"[StuffText] text=\"{st[..Math.Min(st.Length, 200)]}\"");
             return true;
         },
 
-        [(byte)ServerMessageType.ServerInfo] = (ctx, reader) => HandleServerInfo(ctx, reader),
-        [(byte)ServerMessageType.DeltaDescription] = (ctx, reader) => HandleDeltaDescription(ctx, reader),
-        [(byte)ServerMessageType.NewMoveVars] = (_, reader) => HandleNewMoveVars(reader),
-        [(byte)ServerMessageType.NewUserMsg] = (_, reader) => HandleNewUserMsg(reader),
-        [(byte)ServerMessageType.UpdateUserInfo] = (ctx, reader) => HandleUpdateUserInfo(ctx, reader),
-        [(byte)ServerMessageType.ResourceRequest] = (ctx, reader) => HandleResourceRequest(ctx, reader),
-        [(byte)ServerMessageType.SpawnBaseline] = (ctx, reader) => HandleSpawnBaseline(ctx, reader),
-        [(byte)ServerMessageType.ClientData] = (ctx, reader) => HandleClientData(ctx, reader),
-        [(byte)ServerMessageType.SignOnNum] = (_, reader) => HandleSignOnNum(reader),
-        [(byte)ServerMessageType.VoiceInit] = (_, reader) => HandleVoiceInit(reader),
-        [(byte)ServerMessageType.Sound] = (_, reader) => HandleSound(reader),
-        [(byte)ServerMessageType.Customization] = (_, reader) => HandleCustomization(reader),
-        [(byte)ServerMessageType.Event] = (ctx, reader) => HandleEvent(ctx, reader, reliable: false),
-        [(byte)ServerMessageType.EventReliable] = (ctx, reader) => HandleEvent(ctx, reader, reliable: true),
-        [(byte)ServerMessageType.Pings] = (_, reader) => HandlePings(reader),
-        [(byte)ServerMessageType.SendCvarValue] = (_, reader) => HandleSendCvarValue(reader),
-        [(byte)ServerMessageType.SendCvarValue2] = (_, reader) => HandleSendCvarValue2(reader),
+        [(byte)ServerMessageType.ServerInfo] = (ctx, ref reader) => HandleServerInfo(ctx, ref reader),
+        [(byte)ServerMessageType.DeltaDescription] = (ctx, ref reader) => HandleDeltaDescription(ctx, ref reader),
+        [(byte)ServerMessageType.NewMoveVars] = (ctx, ref reader) => HandleNewMoveVars(ref reader),
+        [(byte)ServerMessageType.NewUserMsg] = (ctx, ref reader) => HandleNewUserMsg(ref reader),
+        [(byte)ServerMessageType.UpdateUserInfo] = (ctx, ref reader) => HandleUpdateUserInfo(ctx, ref reader),
+        [(byte)ServerMessageType.ResourceRequest] = (ctx, ref reader) => HandleResourceRequest(ctx, ref reader),
+        [(byte)ServerMessageType.SpawnBaseline] = (ctx, ref reader) => HandleSpawnBaseline(ctx, ref reader),
+        [(byte)ServerMessageType.ClientData] = (ctx, ref reader) => HandleClientData(ctx, ref reader),
+        [(byte)ServerMessageType.SignOnNum] = (ctx, ref reader) => HandleSignOnNum(ref reader),
+        [(byte)ServerMessageType.VoiceInit] = (ctx, ref reader) => HandleVoiceInit(ref reader),
+        [(byte)ServerMessageType.Sound] = (ctx, ref reader) => HandleSound(ref reader),
+        [(byte)ServerMessageType.Customization] = (ctx, ref reader) => HandleCustomization(ref reader),
+        [(byte)ServerMessageType.Event] = (ctx, ref reader) => HandleEvent(ctx, ref reader, reliable: false),
+        [(byte)ServerMessageType.EventReliable] = (ctx, ref reader) => HandleEvent(ctx, ref reader, reliable: true),
+        [(byte)ServerMessageType.Pings] = (ctx, ref reader) => HandlePings(ref reader),
+        [(byte)ServerMessageType.SendCvarValue] = (ctx, ref reader) => HandleSendCvarValue(ref reader),
+        [(byte)ServerMessageType.SendCvarValue2] = (ctx, ref reader) => HandleSendCvarValue2(ref reader),
 
-        [(byte)ServerMessageType.SetView] = (_, reader) => CheckedSkip(reader, "SetView", 2),
-        [(byte)ServerMessageType.StopSound] = (_, reader) => CheckedSkip(reader, "StopSound", 2),
-        [(byte)ServerMessageType.SetAngle] = (_, reader) => CheckedSkip(reader, "SetAngle", 2, 2, 2),
-        [(byte)ServerMessageType.AddAngle] = (_, reader) => CheckedSkip(reader, "AddAngle", 2),
-        [(byte)ServerMessageType.DecalName] = (_, reader) => CheckedSkip(reader, "DecalName", 2),
-        [(byte)ServerMessageType.RoomType] = (_, reader) => CheckedSkip(reader, "RoomType", 2),
-        [(byte)ServerMessageType.CrosshairAngle] = (_, reader) => CheckedSkip(reader, "CrosshairAngle", 2),
-        [(byte)ServerMessageType.SoundFade] = (_, reader) => CheckedSkip(reader, "SoundFade", 4),
-        [(byte)ServerMessageType.TempEntity] = (_, reader) => HandleTempEntity(reader),
-        [(byte)ServerMessageType.Damage] = (_, reader) => HandleDamage(reader),
-        [(byte)ServerMessageType.SpawnStaticSound] = (_, reader) => CheckedSkip(reader, "SpawnStaticSound", 14),
+        [(byte)ServerMessageType.SetView] = (ctx, ref reader) => CheckedSkip(ref reader, "SetView", 2),
+        [(byte)ServerMessageType.StopSound] = (ctx, ref reader) => CheckedSkip(ref reader, "StopSound", 2),
+        [(byte)ServerMessageType.SetAngle] = (ctx, ref reader) => CheckedSkip(ref reader, "SetAngle", 2, 2, 2),
+        [(byte)ServerMessageType.AddAngle] = (ctx, ref reader) => CheckedSkip(ref reader, "AddAngle", 2),
+        [(byte)ServerMessageType.DecalName] = (ctx, ref reader) => CheckedSkip(ref reader, "DecalName", 2),
+        [(byte)ServerMessageType.RoomType] = (ctx, ref reader) => CheckedSkip(ref reader, "RoomType", 2),
+        [(byte)ServerMessageType.CrosshairAngle] = (ctx, ref reader) => CheckedSkip(ref reader, "CrosshairAngle", 2),
+        [(byte)ServerMessageType.SoundFade] = (ctx, ref reader) => CheckedSkip(ref reader, "SoundFade", 4),
+        [(byte)ServerMessageType.TempEntity] = (ctx, ref reader) => HandleTempEntity(ref reader),
+        [(byte)ServerMessageType.Damage] = (ctx, ref reader) => HandleDamage(ref reader),
+        [(byte)ServerMessageType.SpawnStaticSound] = (ctx, ref reader) => CheckedSkip(ref reader, "SpawnStaticSound", 14),
 
-        [(byte)ServerMessageType.Version] = (_, reader) =>
+        [(byte)ServerMessageType.Version] = (ctx, ref reader) =>
         {
-            if (!CheckedSkip(reader, "Version", 4)) return false;
-            uint version = BitConverter.ToUInt32(reader.Data, reader.Offset - 4);
+            uint version = reader.ReadUInt32();
             Logger.LogDebug($"[Version] protocol={version}");
             return true;
         },
 
-        [(byte)ServerMessageType.Time] = (_, reader) =>
+        [(byte)ServerMessageType.Time] = (ctx, ref reader) =>
         {
-            reader.ReadSingle(out float time);
+            float time = reader.ReadSingle();
             Logger.LogDebug($"[Time] time={time:F2}");
             return true;
         },
 
-        [(byte)ServerMessageType.TimeScale] = (_, reader) =>
+        [(byte)ServerMessageType.TimeScale] = (ctx, ref reader) =>
         {
-            reader.ReadSingle(out float timeScale);
+            float timeScale = reader.ReadSingle();
             Logger.LogDebug($"[TimeScale] scale={timeScale:F2}");
             return true;
         },
 
-        [(byte)ServerMessageType.LightStyle] = (_, reader) =>
+        [(byte)ServerMessageType.LightStyle] = (ctx, ref reader) =>
         {
-            if (!CheckedSkip(reader, "LightStyle", 1)) return false;
+            reader.ReadUInt8();
             reader.ReadString();
             return true;
         },
 
-        [(byte)ServerMessageType.ResourceLocation] = (_, reader) =>
+        [(byte)ServerMessageType.ResourceLocation] = (ctx, ref reader) =>
         {
             string loc = reader.ReadString();
             Logger.LogDebug($"[ResourceLocation] location=\"{loc}\"");
             return true;
         },
 
-        [(byte)ServerMessageType.ResourceList] = (ctx, reader) =>
+        [(byte)ServerMessageType.ResourceList] = (ctx, ref reader) =>
         {
-            int listStart = reader.Offset;
-            ProcessResourceList(ctx, reader);
-            ctx.ResourceListRawBytes = reader.Data[listStart..reader.Offset];
-            Logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={reader.Offset - listStart}");
+            int listStart = reader.BytePosition;
+            ProcessResourceList(ctx, ref reader);
+            ctx.ResourceListRawBytes = reader.Buffer[listStart..reader.BytePosition].ToArray();
+            Logger.LogDebug($"[ResourceList] count={ctx.Resources.Length}, dataBytes={reader.BytePosition - listStart}");
             OnResourceList?.Invoke(this, ctx.Resources);
 
             // Resource parsing completes the client's loading phase — request
@@ -220,77 +240,72 @@ public partial class GoldsrcConnection
         [(byte)ServerMessageType.Director] = SkipRest("Director"),
         [(byte)ServerMessageType.VoiceData] = SkipRest("VoiceData"),
 
-        [(byte)ServerMessageType.Intermission] = (_, _) =>
+        [(byte)ServerMessageType.Intermission] = (ctx, ref reader) =>
         {
             Logger.LogDebug("[Intermission] intermission started");
             return true;
         },
 
-        [(byte)ServerMessageType.Finale] = (_, reader) =>
+        [(byte)ServerMessageType.Finale] = (ctx, ref reader) =>
         {
             string finaleStr = reader.ReadString();
             Logger.LogDebug($"[Finale] text=\"{finaleStr}\"");
             return true;
         },
 
-        [(byte)ServerMessageType.Cutscene] = (_, reader) =>
+        [(byte)ServerMessageType.Cutscene] = (ctx, ref reader) =>
         {
             string cutscene = reader.ReadString();
             Logger.LogDebug($"[Cutscene] name=\"{cutscene}\"");
             return true;
         },
 
-        [(byte)ServerMessageType.FileTxferFailed] = (_, reader) =>
+        [(byte)ServerMessageType.FileTxferFailed] = (ctx, ref reader) =>
         {
             string failName = reader.ReadString();
             Logger.LogDebug($"[FileTxferFailed] file=\"{failName}\"");
             return true;
         },
 
-        [(byte)ServerMessageType.SendExtraInfo] = (_, reader) =>
+        [(byte)ServerMessageType.SendExtraInfo] = (ctx, ref reader) =>
         {
             // Payload: gamedir string + one byte (sv_cheats flag).
             string extraDir = reader.ReadString();
-            byte extraFlag = reader.ReadByte();
+            byte extraFlag = reader.ReadUInt8();
             Logger.LogDebug($"[SendExtraInfo] dir=\"{extraDir}\", svCheats={extraFlag}");
             return true;
         },
 
-        [(byte)ServerMessageType.Exec] = (_, reader) =>
+        [(byte)ServerMessageType.Exec] = (ctx, ref reader) =>
         {
             // Payload: one exec-type byte; type 1 is followed by a class number byte (TFC).
-            byte execType = reader.ReadByte();
+            byte execType = reader.ReadUInt8();
             byte execClass = 0;
             if (execType == 1)
-                execClass = reader.ReadByte();
+                execClass = reader.ReadUInt8();
             Logger.LogDebug($"[Exec] type={execType}, class={execClass}");
             return true;
         },
 
-        [(byte)ServerMessageType.CdTrack] = (_, reader) =>
+        [(byte)ServerMessageType.CdTrack] = (ctx, ref reader) =>
         {
-            if (!CheckedSkip(reader, "CdTrack", 2)) return false;
-            byte track = reader.Data[reader.Offset - 2];
-            byte loopTrack = reader.Data[reader.Offset - 1];
+            byte track = reader.ReadUInt8();
+            byte loopTrack = reader.ReadUInt8();
             Logger.LogDebug($"[CdTrack] track={track}, loop={loopTrack}");
             return true;
         },
 
-        [(byte)ServerMessageType.WeaponAnim] = (_, reader) =>
+        [(byte)ServerMessageType.WeaponAnim] = (ctx, ref reader) =>
         {
-            if (!CheckedSkip(reader, "WeaponAnim", 2)) return false;
-            byte anim = reader.Data[reader.Offset - 2];
-            byte body = reader.Data[reader.Offset - 1];
+            byte anim = reader.ReadUInt8();
+            byte body = reader.ReadUInt8();
             Logger.LogDebug($"[WeaponAnim] anim={anim}, body={body}");
             return true;
         },
 
-        [(byte)ServerMessageType.SetPause] = (_, reader) =>
+        [(byte)ServerMessageType.SetPause] = (ctx, ref reader) =>
         {
-            int bitIdx = reader.Offset * 8;
-            uint paused = 0;
-            BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref paused, 1);
-            reader.Offset = (bitIdx + 7) / 8;
+            uint paused = reader.ReadBits(1);
             Logger.LogDebug($"[SetPause] paused={paused}");
             return true;
         },
@@ -298,57 +313,45 @@ public partial class GoldsrcConnection
     }
 
     /// <summary>Skips fixed-size payloads, aborting the packet when data is missing.</summary>
-    private bool CheckedSkip(MessageReader reader, string name, params ReadOnlySpan<int> sizes)
+    private bool CheckedSkip(ref BufferReader reader, string name, params ReadOnlySpan<int> sizes)
     {
-        for (int i = 0; i < sizes.Length; i++)
+        int total = 0;
+        foreach (int size in sizes)
+            total += size;
+        if (reader.Remaining < total)
         {
-            if (reader.Offset + sizes[i] > reader.Size)
-            {
-                Logger.LogWarning(sizes.Length == 1
-                    ? $"[{name}] buffer overflow"
-                    : $"[{name}] buffer overflow (part {i})");
-                return false;
-            }
-            reader.Offset += sizes[i];
+            Logger.LogWarning(sizes.Length == 1
+                ? $"[{name}] buffer overflow"
+                : $"[{name}] buffer overflow ({total} bytes needed, {reader.Remaining} left)");
+            return false;
         }
+        reader.Skip(total);
         return true;
     }
 
     // --- Simple struct/string parsers ---
 
-    private unsafe bool HandleNewMoveVars(MessageReader reader)
+    private bool HandleNewMoveVars(ref BufferReader reader)
     {
-        if (!reader.ReadStruct<NewMoveVarsData>(out _))
-        {
-            Logger.LogWarning($"[NewMoveVars] buffer overflow: offset={reader.Offset}, size={reader.Size}");
-            return false;
-        }
+        reader.ReadStruct<NewMoveVarsData>();
         reader.ReadString();
-        Logger.LogDebug($"[NewMoveVars] done, structSize={sizeof(NewMoveVarsData)}");
+        Logger.LogDebug("[NewMoveVars] done");
         return true;
     }
 
-    private unsafe bool HandleNewUserMsg(MessageReader reader)
+    private bool HandleNewUserMsg(ref BufferReader reader)
     {
-        if (!reader.ReadStruct<NewUserMsgData>(out _))
-        {
-            Logger.LogWarning($"[NewUserMsg] buffer overflow: offset={reader.Offset}, size={reader.Size}");
-            return false;
-        }
-        Logger.LogDebug($"[NewUserMsg] done, structSize={sizeof(NewUserMsgData)}");
+        reader.ReadStruct<NewUserMsgData>();
+        Logger.LogDebug("[NewUserMsg] done");
         return true;
     }
 
-    private bool HandleUpdateUserInfo(ConnectionContext ctx, MessageReader reader)
+    private bool HandleUpdateUserInfo(ConnectionContext ctx, ref BufferReader reader)
     {
-        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[UpdateUserInfo] buffer overflow at byte 1"); return false; }
-        byte slot = reader.Data[reader.Offset];
-        reader.Offset += 1;
-        if (reader.Offset + 4 > reader.Size) { Logger.LogWarning("[UpdateUserInfo] buffer overflow at byte 4"); return false; }
-        reader.Offset += 4;
+        byte slot = reader.ReadUInt8();
+        reader.Skip(4); // user ID
         string uui = reader.ReadString();
-        if (reader.Offset + 16 > reader.Size) { Logger.LogWarning("[UpdateUserInfo] buffer overflow at 16"); return false; }
-        reader.Offset += 16;
+        reader.Skip(16); // HashedCDKey
         Logger.LogDebug($"[UpdateUserInfo] slot={slot}, userInfo=\"{uui[..Math.Min(uui.Length, 100)]}\"");
 
         // The server broadcasts this message for every player. Only adopt the
@@ -359,7 +362,7 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private bool HandleSendCvarValue(MessageReader reader)
+    private bool HandleSendCvarValue(ref BufferReader reader)
     {
         string cvarName = reader.ReadString();
         Logger.LogDebug($"[SendCvarValue] cvar=\"{cvarName}\"");
@@ -367,9 +370,8 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private bool HandleSendCvarValue2(MessageReader reader)
+    private bool HandleSendCvarValue2(ref BufferReader reader)
     {
-        if (reader.Offset + 4 > reader.Size) { Logger.LogWarning("[SendCvarValue2] buffer overflow"); return false; }
         uint requestId = reader.ReadUInt32();
         string cvarName = reader.ReadString();
         Logger.LogDebug($"[SendCvarValue2] requestId={requestId}, cvar=\"{cvarName}\"");
@@ -377,28 +379,22 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private bool HandleVoiceInit(MessageReader reader)
+    private bool HandleVoiceInit(ref BufferReader reader)
     {
         string codec = reader.ReadString();
-        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[VoiceInit] buffer overflow"); return true; }
-        byte quality = reader.Data[reader.Offset++];
+        byte quality = reader.ReadUInt8();
         Logger.LogDebug($"[VoiceInit] codec=\"{codec}\", quality={quality}");
         return true;
     }
 
-    private bool HandleCustomization(MessageReader reader)
+    private bool HandleCustomization(ref BufferReader reader)
     {
-        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[Customization] buffer overflow at 1"); return false; }
-        byte playerSlot = reader.Data[reader.Offset++];
-        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[Customization] buffer overflow at 2"); return false; }
-        byte resourceType = reader.Data[reader.Offset++];
+        byte playerSlot = reader.ReadUInt8();
+        byte resourceType = reader.ReadUInt8();
         string resourceName = reader.ReadString();
-        if (reader.Offset + 2 > reader.Size) { Logger.LogWarning("[Customization] buffer overflow at 3"); return false; }
-        reader.Offset += 2;
-        if (reader.Offset + 4 > reader.Size) { Logger.LogWarning("[Customization] buffer overflow at 4"); return false; }
-        reader.Offset += 4;
-        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[Customization] buffer overflow at 5"); return false; }
-        reader.Offset += 1;
+        reader.Skip(2); // next download index
+        reader.Skip(4); // download size
+        reader.Skip(1); // flags
         Logger.LogDebug($"[Customization] player={playerSlot}, type={resourceType}, name=\"{resourceName}\"");
         return true;
     }

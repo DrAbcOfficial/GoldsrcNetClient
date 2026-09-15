@@ -1,8 +1,8 @@
 using GoldsrcNetClient.Core.Handshake;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Netchan;
 using GoldsrcNetClient.Core.Protocol;
-using GoldsrcNetClient.Core.Util;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Buffers.Binary;
@@ -223,8 +223,10 @@ public partial class GoldsrcConnection : IDisposable
     /// <param name="ct">Cancellation token.</param>
     public Task SendStringCmdAsync(ClientCommandType cmd, string payload, CancellationToken ct = default)
     {
-        List<byte> bytes = [(byte)cmd, .. Encoding.UTF8.GetBytes(payload), 0];
-        return SendReliableAsync([.. bytes], ct);
+        var writer = new BufferWriter();
+        writer.WriteUInt8((byte)cmd);
+        writer.WriteString(payload);
+        return SendReliableAsync(writer.ToArray(), ct);
     }
 
     /// <summary>
@@ -235,10 +237,10 @@ public partial class GoldsrcConnection : IDisposable
     /// <param name="ct">Cancellation token.</param>
     public Task SendCommandAsync(ClientCommandType cmd, byte[] data, CancellationToken ct = default)
     {
-        byte[] bytes = new byte[data.Length + 1];
-        bytes[0] = (byte)cmd;
-        data.CopyTo(bytes, 1);
-        return SendReliableAsync(bytes, ct);
+        var writer = new BufferWriter();
+        writer.WriteUInt8((byte)cmd);
+        writer.WriteBytes(data);
+        return SendReliableAsync(writer.ToArray(), ct);
     }
 
     /// <summary>
@@ -246,10 +248,10 @@ public partial class GoldsrcConnection : IDisposable
     /// </summary>
     public Task SendCvarValueAsync(string name, string value)
     {
-        List<byte> reply = [];
-        MessageWriter.WriteString(reply, name);
-        MessageWriter.WriteString(reply, value);
-        return SendCommandAsync(ClientCommandType.CvarValue, [.. reply]);
+        var writer = new BufferWriter();
+        writer.WriteString(name);
+        writer.WriteString(value);
+        return SendCommandAsync(ClientCommandType.CvarValue, writer.ToArray());
     }
 
     /// <summary>
@@ -257,11 +259,11 @@ public partial class GoldsrcConnection : IDisposable
     /// </summary>
     public Task SendCvarValue2Async(int requestId, string name, string value)
     {
-        List<byte> reply = [];
-        MessageWriter.WriteUInt32(reply, (uint)requestId);
-        MessageWriter.WriteString(reply, name);
-        MessageWriter.WriteString(reply, value);
-        return SendCommandAsync(ClientCommandType.CvarValue2, [.. reply]);
+        var writer = new BufferWriter();
+        writer.WriteUInt32((uint)requestId);
+        writer.WriteString(name);
+        writer.WriteString(value);
+        return SendCommandAsync(ClientCommandType.CvarValue2, writer.ToArray());
     }
 
     /// <summary>

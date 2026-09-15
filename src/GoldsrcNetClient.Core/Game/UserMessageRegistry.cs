@@ -1,4 +1,4 @@
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Io;
 using System.Text;
 
 namespace GoldsrcNetClient.Core.Game;
@@ -24,10 +24,9 @@ public sealed class UserMessageRegistry
     /// Registers a user message from the raw <see cref="GoldsrcNetClient.Core.Protocol.ServerMessageType.NewUserMsg"/> payload.
     /// Advances the reader past the consumed bytes.
     /// </summary>
-    public unsafe void Register(MessageReader reader)
+    public unsafe void Register(ref BufferReader reader)
     {
-        if (!reader.ReadStruct<Protocol.NewUserMsgData>(out var msg))
-            return;
+        var msg = reader.ReadStruct<Protocol.NewUserMsgData>();
 
         int len = 0;
         while (len < 16 && msg.NameData[len] != 0) len++;

@@ -1,3 +1,4 @@
+using GoldsrcNetClient.Core.Io;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
@@ -134,29 +135,29 @@ public static class A2SQuerier
     /// </summary>
     private static A2SInfo ParseGoldSrc(byte[] data, int pingMs)
     {
-        var reader = new ByteReader(data, 5);
-        string first = reader.ReadString();
+        var reader = new BufferReader(data) { BytePosition = 5 };
+        string first = Decode(reader.ReadStringBytes());
 
         if (LooksLikeAddress(first))
         {
-            string name = reader.ReadString();
-            string map = reader.ReadString();
-            string folder = reader.ReadString();
-            string game = reader.ReadString();
-            int players = reader.ReadByte();
-            int maxPlayers = reader.ReadByte();
+            string name = Decode(reader.ReadStringBytes());
+            string map = Decode(reader.ReadStringBytes());
+            string folder = Decode(reader.ReadStringBytes());
+            string game = Decode(reader.ReadStringBytes());
+            int players = reader.ReadUInt8();
+            int maxPlayers = reader.ReadUInt8();
             return new A2SInfo(name, map, players, maxPlayers, folder, game, pingMs);
         }
         else
         {
             // Xash3D: the protocol version byte (ASCII digit) precedes the hostname.
             string name = first.Length > 1 ? first[1..] : first;
-            string map = reader.ReadString();
-            string folder = reader.ReadString();
-            string game = reader.ReadString();
+            string map = Decode(reader.ReadStringBytes());
+            string folder = Decode(reader.ReadStringBytes());
+            string game = Decode(reader.ReadStringBytes());
             reader.ReadInt16(); // appid
-            int players = reader.ReadByte();
-            int maxPlayers = reader.ReadByte();
+            int players = reader.ReadUInt8();
+            int maxPlayers = reader.ReadUInt8();
             return new A2SInfo(name, map, players, maxPlayers, folder, game, pingMs);
         }
     }
@@ -168,15 +169,15 @@ public static class A2SQuerier
     /// <summary>Source reply: <c>I protocol name map folder game (short)id players max bots ...</c>.</summary>
     private static A2SInfo ParseSource(byte[] data, int pingMs)
     {
-        var reader = new ByteReader(data, 5);
-        reader.ReadByte(); // protocol version
-        string name = reader.ReadString();
-        string map = reader.ReadString();
-        string folder = reader.ReadString();
-        string game = reader.ReadString();
+        var reader = new BufferReader(data) { BytePosition = 5 };
+        reader.ReadUInt8(); // protocol version
+        string name = Decode(reader.ReadStringBytes());
+        string map = Decode(reader.ReadStringBytes());
+        string folder = Decode(reader.ReadStringBytes());
+        string game = Decode(reader.ReadStringBytes());
         reader.ReadInt16(); // appid
-        int players = reader.ReadByte();
-        int maxPlayers = reader.ReadByte();
+        int players = reader.ReadUInt8();
+        int maxPlayers = reader.ReadUInt8();
 
         return new A2SInfo(name, map, players, maxPlayers, folder, game, pingMs);
     }
@@ -223,45 +224,6 @@ public static class A2SQuerier
         {
             try { return LegacyEncoding.GetString(bytes); }
             catch { return Encoding.Latin1.GetString(bytes); }
-        }
-    }
-
-    /// <summary>Sequential reader over a fixed buffer of null-terminated strings and little-endian scalars.</summary>
-    private ref struct ByteReader
-    {
-        private readonly byte[] _data;
-        private int _pos;
-
-        public ByteReader(byte[] data, int pos)
-        {
-            _data = data;
-            _pos = pos;
-        }
-
-        public int ReadByte()
-        {
-            if (_pos >= _data.Length)
-                throw new EndOfStreamException();
-            return _data[_pos++];
-        }
-
-        public short ReadInt16()
-        {
-            if (_pos + 2 > _data.Length)
-                throw new EndOfStreamException();
-            short value = BinaryPrimitives.ReadInt16LittleEndian(_data.AsSpan(_pos, 2));
-            _pos += 2;
-            return value;
-        }
-
-        public string ReadString()
-        {
-            int end = Array.IndexOf(_data, (byte)0, _pos);
-            if (end < 0)
-                throw new EndOfStreamException();
-            string value = Decode(_data.AsSpan(_pos, end - _pos));
-            _pos = end + 1;
-            return value;
         }
     }
 }

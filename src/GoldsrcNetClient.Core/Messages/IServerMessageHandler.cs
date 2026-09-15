@@ -1,3 +1,4 @@
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Protocol;
 
 namespace GoldsrcNetClient.Core.Messages;
@@ -14,9 +15,10 @@ namespace GoldsrcNetClient.Core.Messages;
 /// processing. Return <c>true</c> to consume the message (built-in logic is skipped);
 /// return <c>false</c> to fall through to the default parser.</para>
 ///
-/// <para>The handler must advance <see cref="MessageReader.Offset"/> past all bytes consumed
-/// from the message. Use the reader's methods (e.g. <see cref="MessageReader.ReadString"/>,
-/// <see cref="MessageReader.ReadUInt32"/>) or read raw bytes via <see cref="MessageReader.Data"/>.</para>
+/// <para>The handler must advance the reader past all bytes consumed from the
+/// message. The reader is passed by reference; use its methods (e.g.
+/// <see cref="BufferReader.ReadString"/>, <see cref="BufferReader.ReadUInt32"/>)
+/// to read and advance in one step.</para>
 ///
 /// <para>To observe built-in-handled messages (console prints, disconnects, server info, ...),
 /// prefer subscribing to the connection's events instead of intercepting the raw message.</para>
@@ -24,18 +26,12 @@ namespace GoldsrcNetClient.Core.Messages;
 /// <code>
 /// public class MyHandler : IServerMessageHandler
 /// {
-///     public bool HandleMessage(GoldsrcNetClient.Core.Network.GoldsrcConnection conn, byte messageType, MessageReader reader)
+///     public bool HandleMessage(GoldsrcNetClient.Core.Network.GoldsrcConnection conn, byte messageType, ref BufferReader reader)
 ///     {
 ///         if (messageType == (byte)ServerMessageType.Print)
 ///         {
 ///             string msg = reader.ReadString();
 ///             Console.WriteLine($"Server: {msg}");
-///             return true;
-///         }
-///         // Handle user messages >= 0x40
-///         if (messageType >= (byte)ServerMessageType.UserMessageStart)
-///         {
-///             // Custom parsing with reader...
 ///             return true;
 ///         }
 ///         return false; // let default processing handle it
@@ -53,11 +49,11 @@ public interface IServerMessageHandler
     /// <param name="messageType">The raw message type byte. Known types correspond to
     /// <see cref="ServerMessageType"/> values; values at or above <see cref="ServerMessageType.UserMessageStart"/>
     /// (0x40) are server-registered user messages.</param>
-    /// <param name="reader">A <see cref="MessageReader"/> positioned immediately after the type byte.
-    /// Advance <see cref="MessageReader.Offset"/> past all bytes consumed — the connection
-    /// will use the updated position for the next message.</param>
+    /// <param name="reader">A <see cref="BufferReader"/> positioned immediately after the type byte.
+    /// Advance it past all bytes consumed — the connection will use the updated
+    /// position for the next message.</param>
     /// <returns><c>true</c> if the message was consumed; <c>false</c> to let the built-in parser handle it.</returns>
-    bool HandleMessage(GoldsrcNetClient.Core.Network.GoldsrcConnection connection, byte messageType, MessageReader reader);
+    bool HandleMessage(GoldsrcNetClient.Core.Network.GoldsrcConnection connection, byte messageType, ref BufferReader reader);
 }
 
 /// <summary>
@@ -67,5 +63,5 @@ public interface IServerMessageHandler
 public sealed class DefaultServerMessageHandler : IServerMessageHandler
 {
     /// <inheritdoc />
-    public bool HandleMessage(GoldsrcNetClient.Core.Network.GoldsrcConnection connection, byte messageType, MessageReader reader) => false;
+    public bool HandleMessage(GoldsrcNetClient.Core.Network.GoldsrcConnection connection, byte messageType, ref BufferReader reader) => false;
 }

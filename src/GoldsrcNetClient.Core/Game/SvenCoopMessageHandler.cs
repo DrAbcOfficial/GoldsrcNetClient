@@ -1,4 +1,4 @@
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Network;
 
 namespace GoldsrcNetClient.Core.Game;
@@ -188,11 +188,10 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     #region On* methods
 
     /// <summary>Invokes <see cref="OnScSpecificMessage"/>.</summary>
-    protected virtual void ParseScRaw(MessageReader r, string name)
+    protected virtual void ParseScRaw(ref BufferReader r, string name)
     {
-        byte[] data = new byte[r.Remaining];
-        Array.Copy(r.Data, r.Offset, data, 0, data.Length);
-        r.Offset = r.Size;
+        byte[] data = r.RemainingSpan.ToArray();
+        r.BytePosition = r.Length;
         OnScSpecificMessage?.Invoke(new RawUserMessage(0, name, data));
     }
 
@@ -263,151 +262,151 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     #endregion
 
     /// <inheritdoc />
-    protected override bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, MessageReader reader)
+    protected override bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, ref BufferReader reader)
     {
         switch (name)
         {
             // ── Sven wire formats that differ from the Half-Life base parsers ──
-            case "CurWeapon": ParseCurWeapon(reader); return true;
-            case "Health": ParseHealth(reader); return true;
-            case "Battery": ParseBattery(reader); return true;
-            case "AmmoX": ParseAmmoX(reader); return true;
-            case "AmmoPickup": ParseAmmoPickup(reader); return true;
-            case "WeapPickup": ParseWeapPickup(reader); return true;
-            case "WeaponList": ParseWeaponList(reader); return true;
-            case "TextMsg": ParseTextMsg(reader); return true;
-            case "HudText": ParseHudText(reader); return true;
-            case "GameTitle": ParseGameTitle(reader); return true;
-            case "Concuss": ParseConcuss(reader); return true;
-            case "Fog": ParseFog(reader); return true;
-            case "VGUIMenu": ParseVguiMenu(reader); return true;
+            case "CurWeapon": ParseCurWeapon(ref reader); return true;
+            case "Health": ParseHealth(ref reader); return true;
+            case "Battery": ParseBattery(ref reader); return true;
+            case "AmmoX": ParseAmmoX(ref reader); return true;
+            case "AmmoPickup": ParseAmmoPickup(ref reader); return true;
+            case "WeapPickup": ParseWeapPickup(ref reader); return true;
+            case "WeaponList": ParseWeaponList(ref reader); return true;
+            case "TextMsg": ParseTextMsg(ref reader); return true;
+            case "HudText": ParseHudText(ref reader); return true;
+            case "GameTitle": ParseGameTitle(ref reader); return true;
+            case "Concuss": ParseConcuss(ref reader); return true;
+            case "Fog": ParseFog(ref reader); return true;
+            case "VGUIMenu": ParseVguiMenu(ref reader); return true;
 
             // ── Sven-specific (no base handler) ──
-            case "ShowMenu": ParseShowMenu(reader); return true;
-            case "HideHUD": ParseHideHUD(reader); return true;
-            case "VoiceMask": ParseVoiceMask(reader); return true;
-            case "Spectator": ParseSpectator(reader); return true;
-            case "AllowSpec": ParseAllowSpec(reader); return true;
-            case "TeamScore": ParseTeamScore(reader); return true;
-            case "ScoreInfo": ParseScoreInfo(reader); return true;
-            case "TeamNames": ParseTeamNames(reader); return true;
-            case "MOTD": ParseMotd(reader); return true;
-            case "ServerName": ParseServerName(reader); return true;
-            case "ServerVer": ParseServerVersion(reader); return true;
-            case "ServerBuild": ParseServerBuild(reader); return true;
-            case "NextMap": ParseNextMap(reader); return true;
-            case "ViewMode": ParseViewMode(reader); return true;
-            case "CdAudio": ParseCdAudio(reader); return true;
-            case "ClassicMode": ParseClassicMode(reader); return true;
-            case "VModelPos": ParseVModelPos(reader); return true;
-            case "TimeEnd": ParseTimeEnd(reader); return true;
-            case "OnTank": ParseOnTank(reader); return true;
-            case "Playlist": ParsePlaylist(reader); return true;
-            case "Speaksent": ParseSentence(reader); return true;
-            case "ValClass": ParseValClass(reader); return true;
-            case "PrtlUpdt": ParsePortalUpdate(reader); return true;
-            case "InvAdd": ParseInventoryAdd(reader); return true;
-            case "InvRemove": ParseInventoryRemove(reader); return true;
-            case "ToggleElem": ParseToggleElem(reader); return true;
-            case "CustSpr": ParseCustomSprite(reader); return true;
-            case "NumDisplay": ParseNumDisplay(reader); return true;
-            case "UpdateNum": ParseUpdateNum(reader); return true;
-            case "TimeDisplay": ParseTimeDisplay(reader); return true;
-            case "UpdateTime": ParseUpdateTime(reader); return true;
-            case "WeaponSpr": ParseWeaponSprite(reader); return true;
-            case "CustWeapon": ParseCustomWeapon(reader); return true;
-            case "PrintKB": ParseKeyBinding(reader); return true;
-            case "NotifyText": ParseNotifyText(reader); return true;
-            case "Gib": ParseGib(reader); return true;
-            case "TE_CUSTOM": ParseTeCustom(reader); return true;
-            case "CbElec": ParseCbElec(reader); return true;
-            case "ShkFlash": ParseShkFlash(reader); return true;
-            case "TracerDecal": ParseTracerDecal(reader); return true;
-            case "SporeTrail": ParseSporeTrail(reader); return true;
-            case "CreateBlood": ParseCreateBlood(reader); return true;
-            case "GargSplash": ParseGargSplash(reader); return true;
-            case "StartSound": ParseStartSound(reader); return true;
-            case "ToxicCloud": ParseToxicCloud(reader); return true;
-            case "SRDetonate": ParseSrDetonate(reader); return true;
-            case "SRPrimed": ParseSrPrimed(reader); return true;
-            case "SRPrimedOff": ParseSrPrimedOff(reader); return true;
-            case "RampSprite": ParseRampSprite(reader); return true;
-            case "ShieldRic": ParseShieldRic(reader); return true;
-            case "WeatherFX": ParseWeatherFx(reader); return true;
-            case "CameraMouse": ParseCameraMouse(reader); return true;
-            case "Flamethwr": ParseFlamethrower(reader); return true;
-            case "ChangeSky": ParseChangeSky(reader); return true;
-            case "ClServerInfo": ParseClServerInfo(reader); return true;
-            case "ClExtrasInfo": ParseClExtrasInfo(reader); return true;
-            case "EndVote": ParseEndVote(reader); return true;
-            case "MapList": ParseMapList(reader); return true;
-            case "VoteMenu": ParseVoteMenu(reader); return true;
+            case "ShowMenu": ParseShowMenu(ref reader); return true;
+            case "HideHUD": ParseHideHUD(ref reader); return true;
+            case "VoiceMask": ParseVoiceMask(ref reader); return true;
+            case "Spectator": ParseSpectator(ref reader); return true;
+            case "AllowSpec": ParseAllowSpec(ref reader); return true;
+            case "TeamScore": ParseTeamScore(ref reader); return true;
+            case "ScoreInfo": ParseScoreInfo(ref reader); return true;
+            case "TeamNames": ParseTeamNames(ref reader); return true;
+            case "MOTD": ParseMotd(ref reader); return true;
+            case "ServerName": ParseServerName(ref reader); return true;
+            case "ServerVer": ParseServerVersion(ref reader); return true;
+            case "ServerBuild": ParseServerBuild(ref reader); return true;
+            case "NextMap": ParseNextMap(ref reader); return true;
+            case "ViewMode": ParseViewMode(ref reader); return true;
+            case "CdAudio": ParseCdAudio(ref reader); return true;
+            case "ClassicMode": ParseClassicMode(ref reader); return true;
+            case "VModelPos": ParseVModelPos(ref reader); return true;
+            case "TimeEnd": ParseTimeEnd(ref reader); return true;
+            case "OnTank": ParseOnTank(ref reader); return true;
+            case "Playlist": ParsePlaylist(ref reader); return true;
+            case "Speaksent": ParseSentence(ref reader); return true;
+            case "ValClass": ParseValClass(ref reader); return true;
+            case "PrtlUpdt": ParsePortalUpdate(ref reader); return true;
+            case "InvAdd": ParseInventoryAdd(ref reader); return true;
+            case "InvRemove": ParseInventoryRemove(ref reader); return true;
+            case "ToggleElem": ParseToggleElem(ref reader); return true;
+            case "CustSpr": ParseCustomSprite(ref reader); return true;
+            case "NumDisplay": ParseNumDisplay(ref reader); return true;
+            case "UpdateNum": ParseUpdateNum(ref reader); return true;
+            case "TimeDisplay": ParseTimeDisplay(ref reader); return true;
+            case "UpdateTime": ParseUpdateTime(ref reader); return true;
+            case "WeaponSpr": ParseWeaponSprite(ref reader); return true;
+            case "CustWeapon": ParseCustomWeapon(ref reader); return true;
+            case "PrintKB": ParseKeyBinding(ref reader); return true;
+            case "NotifyText": ParseNotifyText(ref reader); return true;
+            case "Gib": ParseGib(ref reader); return true;
+            case "TE_CUSTOM": ParseTeCustom(ref reader); return true;
+            case "CbElec": ParseCbElec(ref reader); return true;
+            case "ShkFlash": ParseShkFlash(ref reader); return true;
+            case "TracerDecal": ParseTracerDecal(ref reader); return true;
+            case "SporeTrail": ParseSporeTrail(ref reader); return true;
+            case "CreateBlood": ParseCreateBlood(ref reader); return true;
+            case "GargSplash": ParseGargSplash(ref reader); return true;
+            case "StartSound": ParseStartSound(ref reader); return true;
+            case "ToxicCloud": ParseToxicCloud(ref reader); return true;
+            case "SRDetonate": ParseSrDetonate(ref reader); return true;
+            case "SRPrimed": ParseSrPrimed(ref reader); return true;
+            case "SRPrimedOff": ParseSrPrimedOff(ref reader); return true;
+            case "RampSprite": ParseRampSprite(ref reader); return true;
+            case "ShieldRic": ParseShieldRic(ref reader); return true;
+            case "WeatherFX": ParseWeatherFx(ref reader); return true;
+            case "CameraMouse": ParseCameraMouse(ref reader); return true;
+            case "Flamethwr": ParseFlamethrower(ref reader); return true;
+            case "ChangeSky": ParseChangeSky(ref reader); return true;
+            case "ClServerInfo": ParseClServerInfo(ref reader); return true;
+            case "ClExtrasInfo": ParseClExtrasInfo(ref reader); return true;
+            case "EndVote": ParseEndVote(ref reader); return true;
+            case "MapList": ParseMapList(ref reader); return true;
+            case "VoteMenu": ParseVoteMenu(ref reader); return true;
 
             default:
-                return base.DispatchUserMessage(connection, index, name, reader);
+                return base.DispatchUserMessage(connection, index, name, ref reader);
         }
     }
 
     // ── Shared-name overrides (Sven wire format differs from Half-Life) ──
 
     /// <summary>CurWeapon (Sven): byte state, short weaponId (-1 hides), long clip, long reserve.</summary>
-    protected override void ParseCurWeapon(MessageReader r)
+    protected override void ParseCurWeapon(ref BufferReader r)
     {
-        var ev = new ScCurWeaponEvent(r.ReadByte(), ReadShort(r), ReadInt32(r), ReadInt32(r));
+        var ev = new ScCurWeaponEvent(r.ReadUInt8(), r.ReadInt16(), r.ReadInt32(), r.ReadInt32());
         OnScCurWeapon(ev);
     }
 
     /// <summary>Health (Sven): 32-bit value.</summary>
-    protected override void ParseHealth(MessageReader r)
+    protected override void ParseHealth(ref BufferReader r)
     {
-        OnScHealth(new ScHealthEvent(ReadInt32(r)));
+        OnScHealth(new ScHealthEvent(r.ReadInt32()));
     }
 
     /// <summary>Battery (Sven): single byte.</summary>
-    protected override void ParseBattery(MessageReader r)
+    protected override void ParseBattery(ref BufferReader r)
     {
-        OnScBattery(new ScBatteryEvent(r.ReadByte()));
+        OnScBattery(new ScBatteryEvent(r.ReadUInt8()));
     }
 
     /// <summary>AmmoX (Sven): byte index, 32-bit count.</summary>
-    protected override void ParseAmmoX(MessageReader r)
+    protected override void ParseAmmoX(ref BufferReader r)
     {
-        OnScAmmoX(new ScAmmoXEvent(r.ReadByte(), ReadInt32(r)));
+        OnScAmmoX(new ScAmmoXEvent(r.ReadUInt8(), r.ReadInt32()));
     }
 
     /// <summary>AmmoPickup (Sven): byte index, 32-bit count.</summary>
-    protected override void ParseAmmoPickup(MessageReader r)
+    protected override void ParseAmmoPickup(ref BufferReader r)
     {
-        OnScAmmoPickup(new ScAmmoPickupEvent(r.ReadByte(), ReadInt32(r)));
+        OnScAmmoPickup(new ScAmmoPickupEvent(r.ReadUInt8(), r.ReadInt32()));
     }
 
     /// <summary>WeapPickup (Sven): weapon id as a short.</summary>
-    protected override void ParseWeapPickup(MessageReader r)
+    protected override void ParseWeapPickup(ref BufferReader r)
     {
-        OnScWeapPickup(new ScWeapPickupEvent(ReadShort(r)));
+        OnScWeapPickup(new ScWeapPickupEvent(r.ReadInt16()));
     }
 
     /// <summary>WeaponList (Sven): string, char id, long max, char id, long max, char slot, char pos, short wid, byte flags.</summary>
-    protected override void ParseWeaponList(MessageReader r)
+    protected override void ParseWeaponList(ref BufferReader r)
     {
         var name = r.ReadString();
-        sbyte primaryId = ReadSByte(r);
-        int primaryMax = ReadInt32(r);
-        sbyte secondaryId = ReadSByte(r);
-        int secondaryMax = ReadInt32(r);
-        sbyte slot = ReadSByte(r);
-        sbyte position = ReadSByte(r);
-        short weaponId = ReadShort(r);
-        byte flags = r.ReadByte();
+        sbyte primaryId = ReadSByte(ref r);
+        int primaryMax = r.ReadInt32();
+        sbyte secondaryId = ReadSByte(ref r);
+        int secondaryMax = r.ReadInt32();
+        sbyte slot = ReadSByte(ref r);
+        sbyte position = ReadSByte(ref r);
+        short weaponId = r.ReadInt16();
+        byte flags = r.ReadUInt8();
         OnScWeaponList(new ScWeaponListEvent(name, (byte)primaryId, primaryMax == 0xFF ? -1 : primaryMax,
             (byte)secondaryId, secondaryMax == 0xFF ? -1 : secondaryMax,
             (byte)slot, (byte)position, weaponId, flags));
     }
 
     /// <summary>TextMsg (Sven): destination byte plus message and four "#localisable" parameters.</summary>
-    protected override void ParseTextMsg(MessageReader r)
+    protected override void ParseTextMsg(ref BufferReader r)
     {
-        byte dest = r.ReadByte();
+        byte dest = r.ReadUInt8();
         string message = r.ReadString();
         string p1 = r.ReadString();
         string p2 = r.ReadString();
@@ -417,208 +416,208 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     }
 
     /// <summary>HudText (Sven): a single text/localisation string.</summary>
-    protected override void ParseHudText(MessageReader r)
+    protected override void ParseHudText(ref BufferReader r)
     {
         OnScHudText(new ScHudTextEvent(r.ReadString()));
     }
 
     /// <summary>GameTitle (Sven): no payload — the message itself means "show".</summary>
-    protected override void ParseGameTitle(MessageReader r)
+    protected override void ParseGameTitle(ref BufferReader r)
     {
         OnGameTitle(new GameTitleEvent(1));
     }
 
     /// <summary>Concuss (Sven): direction vector as three floats.</summary>
-    protected override void ParseConcuss(MessageReader r)
+    protected override void ParseConcuss(ref BufferReader r)
     {
-        OnScConcuss(new ScConcussEvent(ReadFloat(r), ReadFloat(r), ReadFloat(r)));
+        OnScConcuss(new ScConcussEvent(ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r)));
     }
 
     /// <summary>Fog (Sven): short, enable byte, 3 coords, short, RGB bytes, 2 shorts.
     /// The leading short and the coordinates are read but discarded by the client.</summary>
-    protected override void ParseFog(MessageReader r)
+    protected override void ParseFog(ref BufferReader r)
     {
-        ReadShort(r); // leading, unused
-        bool enabled = r.ReadByte() != 0;
-        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
-        short unknown = ReadShort(r);
-        byte red = r.ReadByte(), green = r.ReadByte(), blue = r.ReadByte();
-        OnScFog(new ScFogEvent(enabled, x, y, z, unknown, red, green, blue, ReadShort(r), ReadShort(r)));
+        r.ReadInt16(); // leading, unused
+        bool enabled = r.ReadUInt8() != 0;
+        float x = ReadCoord32(ref r), y = ReadCoord32(ref r), z = ReadCoord32(ref r);
+        short unknown = r.ReadInt16();
+        byte red = r.ReadUInt8(), green = r.ReadUInt8(), blue = r.ReadUInt8();
+        OnScFog(new ScFogEvent(enabled, x, y, z, unknown, red, green, blue, r.ReadInt16(), r.ReadInt16()));
     }
 
     /// <summary>VGUIMenu (Sven): menu type byte; type 4 carries a parameter string.</summary>
-    protected override void ParseVguiMenu(MessageReader r)
+    protected override void ParseVguiMenu(ref BufferReader r)
     {
-        byte type = r.ReadByte();
+        byte type = r.ReadUInt8();
         string data = type == 4 ? r.ReadString() : string.Empty;
         OnVguiMenu(new VguiMenuEvent(type, data));
     }
 
     /// <summary>Damage: same field order as Half-Life, but Sven coordinates are 32-bit
     /// (the dedicated server registers Damage with size 18 = 1+1+4+3×4).</summary>
-    protected override void ParseDamage(MessageReader r)
+    protected override void ParseDamage(ref BufferReader r)
     {
-        byte save = r.ReadByte();
-        byte take = r.ReadByte();
-        int damageType = ReadInt32(r);
-        OnDamage(new DamageEvent(save, take, damageType, ReadCoord32(r), ReadCoord32(r), ReadCoord32(r)));
+        byte save = r.ReadUInt8();
+        byte take = r.ReadUInt8();
+        int damageType = r.ReadInt32();
+        OnDamage(new DamageEvent(save, take, damageType, ReadCoord32(ref r), ReadCoord32(ref r), ReadCoord32(ref r)));
     }
 
     // ── Sven-specific parsers ──
 
     /// <summary>ShowMenu (Sven): byte slot mask, signed display time, flag byte, text.</summary>
-    protected virtual void ParseShowMenu(MessageReader r)
+    protected virtual void ParseShowMenu(ref BufferReader r)
     {
-        var ev = new ScShowMenuEvent(r.ReadByte(), ReadSByte(r), r.ReadByte(), r.ReadString());
+        var ev = new ScShowMenuEvent(r.ReadUInt8(), ReadSByte(ref r), r.ReadUInt8(), r.ReadString());
         OnScShowMenu(ev);
     }
 
     /// <summary>HideHUD (Sven): 16-bit hide mask.</summary>
-    protected virtual void ParseHideHUD(MessageReader r)
+    protected virtual void ParseHideHUD(ref BufferReader r)
     {
-        OnScHideHud(new ScHideHudEvent(ReadShort(r)));
+        OnScHideHud(new ScHideHudEvent(r.ReadInt16()));
     }
 
     /// <summary>VoiceMask: two 32-bit audibility/ban masks plus a flag byte.</summary>
-    protected virtual void ParseVoiceMask(MessageReader r)
+    protected virtual void ParseVoiceMask(ref BufferReader r)
     {
-        OnVoiceMask(new VoiceMaskEvent(ReadInt32(r), ReadInt32(r), r.ReadByte()));
+        OnVoiceMask(new VoiceMaskEvent(r.ReadInt32(), r.ReadInt32(), r.ReadUInt8()));
     }
 
     /// <summary>Spectator: player index and spectator flag, both bytes.</summary>
-    protected virtual void ParseSpectator(MessageReader r)
+    protected virtual void ParseSpectator(ref BufferReader r)
     {
-        var ev = new SpectatorEvent(r.ReadByte(), r.ReadByte());
+        var ev = new SpectatorEvent(r.ReadUInt8(), r.ReadUInt8());
         Spectator?.Invoke(ev);
     }
 
     /// <summary>AllowSpec: single allow byte.</summary>
-    protected virtual void ParseAllowSpec(MessageReader r)
+    protected virtual void ParseAllowSpec(ref BufferReader r)
     {
-        AllowSpec?.Invoke(new AllowSpecEvent(r.ReadByte()));
+        AllowSpec?.Invoke(new AllowSpecEvent(r.ReadUInt8()));
     }
 
     /// <summary>TeamScore (Sven): team name and two 16-bit scores.</summary>
-    protected virtual void ParseTeamScore(MessageReader r)
+    protected virtual void ParseTeamScore(ref BufferReader r)
     {
         var team = r.ReadString();
-        short score = ReadShort(r);
-        short score2 = ReadShort(r);
+        short score = r.ReadInt16();
+        short score2 = r.ReadInt16();
         OnScTeamScore(new ScTeamScoreEvent(team, score, score2));
     }
 
     /// <summary>ScoreInfo (Sven): byte index, float score, long, float, float, class byte, 2 bytes.</summary>
-    protected virtual void ParseScoreInfo(MessageReader r)
+    protected virtual void ParseScoreInfo(ref BufferReader r)
     {
         var ev = new ScScoreInfoEvent(
-            r.ReadByte(), ReadFloat(r), ReadInt32(r), ReadFloat(r), ReadFloat(r),
-            r.ReadByte(), r.ReadByte(), r.ReadByte());
+            r.ReadUInt8(), ReadFloat(ref r), r.ReadInt32(), ReadFloat(ref r), ReadFloat(ref r),
+            r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8());
         OnScScoreInfo(ev);
     }
 
     /// <summary>TeamNames (Sven): team count, then per team a name and an RGB colour triple.</summary>
-    protected virtual void ParseTeamNames(MessageReader r)
+    protected virtual void ParseTeamNames(ref BufferReader r)
     {
-        byte count = r.ReadByte();
+        byte count = r.ReadUInt8();
         var teams = new ScTeamNamesTeam[count];
         for (int i = 0; i < count; i++)
         {
             var name = r.ReadString();
-            float cr = ReadCoord32(r), cg = ReadCoord32(r), cb = ReadCoord32(r);
+            float cr = ReadCoord32(ref r), cg = ReadCoord32(ref r), cb = ReadCoord32(ref r);
             teams[i] = new ScTeamNamesTeam(name, cr, cg, cb);
         }
         OnScTeamNames(new ScTeamNamesEvent(teams));
     }
 
     /// <summary>MOTD (Sven): final-chunk byte plus text; chunks concatenate on the client.</summary>
-    protected virtual void ParseMotd(MessageReader r)
+    protected virtual void ParseMotd(ref BufferReader r)
     {
-        OnScMotd(new ScMotdEvent(r.ReadByte() != 0, r.ReadString()));
+        OnScMotd(new ScMotdEvent(r.ReadUInt8() != 0, r.ReadString()));
     }
 
     /// <summary>ServerName (Sven): hostname string.</summary>
-    protected virtual void ParseServerName(MessageReader r)
+    protected virtual void ParseServerName(ref BufferReader r)
     {
         OnScServerName(new ScServerNameEvent(r.ReadString()));
     }
 
     /// <summary>ServerVer (Sven): version string.</summary>
-    protected virtual void ParseServerVersion(MessageReader r)
+    protected virtual void ParseServerVersion(ref BufferReader r)
     {
         OnScServerVersion(new ScServerVersionEvent(r.ReadString()));
     }
 
     /// <summary>ServerBuild (Sven): build string.</summary>
-    protected virtual void ParseServerBuild(MessageReader r)
+    protected virtual void ParseServerBuild(ref BufferReader r)
     {
         OnScServerBuild(new ScServerBuildEvent(r.ReadString()));
     }
 
     /// <summary>NextMap (Sven): map name string.</summary>
-    protected virtual void ParseNextMap(MessageReader r)
+    protected virtual void ParseNextMap(ref BufferReader r)
     {
         OnScNextMap(new ScNextMapEvent(r.ReadString()));
     }
 
     /// <summary>ViewMode (Sven): 0 = first person, anything else = third person.</summary>
-    protected virtual void ParseViewMode(MessageReader r)
+    protected virtual void ParseViewMode(ref BufferReader r)
     {
-        OnScViewMode(new ScViewModeEvent(r.ReadByte() != 0));
+        OnScViewMode(new ScViewModeEvent(r.ReadUInt8() != 0));
     }
 
     /// <summary>CdAudio (Sven): track byte (0 = stop, 1..30 = media/Half-LifeXX).</summary>
-    protected virtual void ParseCdAudio(MessageReader r)
+    protected virtual void ParseCdAudio(ref BufferReader r)
     {
-        OnScCdAudio(new ScCdAudioEvent(r.ReadByte()));
+        OnScCdAudio(new ScCdAudioEvent(r.ReadUInt8()));
     }
 
     /// <summary>ClassicMode (Sven): mode toggle byte.</summary>
-    protected virtual void ParseClassicMode(MessageReader r)
+    protected virtual void ParseClassicMode(ref BufferReader r)
     {
-        OnScClassicMode(new ScClassicModeEvent(r.ReadByte() != 0));
+        OnScClassicMode(new ScClassicModeEvent(r.ReadUInt8() != 0));
     }
 
     /// <summary>VModelPos (Sven): enable byte; when set, a coordinate triple.</summary>
-    protected virtual void ParseVModelPos(MessageReader r)
+    protected virtual void ParseVModelPos(ref BufferReader r)
     {
-        bool enabled = r.ReadByte() == 1;
+        bool enabled = r.ReadUInt8() == 1;
         float x = 0, y = 0, z = 0;
         if (enabled)
         {
-            x = ReadCoord32(r); y = ReadCoord32(r); z = ReadCoord32(r);
+            x = ReadCoord32(ref r); y = ReadCoord32(ref r); z = ReadCoord32(ref r);
         }
         OnScVModelPos(new ScVModelPosEvent(enabled, x, y, z));
     }
 
     /// <summary>TimeEnd (Sven): 32-bit round end time (client adds its clock).</summary>
-    protected virtual void ParseTimeEnd(MessageReader r)
+    protected virtual void ParseTimeEnd(ref BufferReader r)
     {
-        OnScTimeEnd(new ScTimeEndEvent(ReadInt32(r)));
+        OnScTimeEnd(new ScTimeEndEvent(r.ReadInt32()));
     }
 
     /// <summary>OnTank (Sven): tank driving flag byte.</summary>
-    protected virtual void ParseOnTank(MessageReader r)
+    protected virtual void ParseOnTank(ref BufferReader r)
     {
-        OnScOnTank(new ScOnTankEvent(r.ReadByte() != 0));
+        OnScOnTank(new ScOnTankEvent(r.ReadUInt8() != 0));
     }
 
     /// <summary>Playlist (Sven): playlist name.</summary>
-    protected virtual void ParsePlaylist(MessageReader r)
+    protected virtual void ParsePlaylist(ref BufferReader r)
     {
         OnScPlaylist(new ScPlaylistEvent(r.ReadString()));
     }
 
     /// <summary>Speaksent (Sven): sentence name the client feeds to the "speak" command.</summary>
-    protected virtual void ParseSentence(MessageReader r)
+    protected virtual void ParseSentence(ref BufferReader r)
     {
         OnScSentence(new ScSentenceEvent(r.ReadString()));
     }
 
     /// <summary>ValClass (Sven): five class/slot shorts.</summary>
-    protected virtual void ParseValClass(MessageReader r)
+    protected virtual void ParseValClass(ref BufferReader r)
     {
         var classes = new short[5];
-        for (int i = 0; i < 5; i++) classes[i] = ReadShort(r);
+        for (int i = 0; i < 5; i++) classes[i] = r.ReadInt16();
         OnScValClass(new ScValClassEvent(classes));
     }
 
@@ -626,10 +625,10 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// entity(long), enable(byte; 0 removes), vec1, vec2, type(byte), style(byte), life(float),
     /// byte, long, long, flag(byte); type != 0: flag(byte) → long + coord3 + ang3,
     /// type 1: flag → long,long; type 2: two flag bytes; style 2: name string.</summary>
-    protected virtual void ParsePortalUpdate(MessageReader r)
+    protected virtual void ParsePortalUpdate(ref BufferReader r)
     {
-        int entity = ReadInt32(r);
-        if (r.ReadByte() == 0)
+        int entity = r.ReadInt32();
+        if (r.ReadUInt8() == 0)
         {
             OnScPortalUpdate(new ScPortalUpdateEvent(true, entity,
                 [], [], 0, 0, 0, 0, 0, 0, false,
@@ -637,15 +636,15 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
             return;
         }
 
-        var vec1 = ReadCoordVec3(r);
-        var vec2 = ReadCoordVec3(r);
-        byte type = r.ReadByte();
-        byte style = r.ReadByte();
-        float life = ReadFloat(r);
-        byte byte1 = r.ReadByte();
-        int long1 = ReadInt32(r);
-        int long2 = ReadInt32(r);
-        bool flag1 = r.ReadByte() != 0;
+        var vec1 = ReadCoordVec3(ref r);
+        var vec2 = ReadCoordVec3(ref r);
+        byte type = r.ReadUInt8();
+        byte style = r.ReadUInt8();
+        float life = ReadFloat(ref r);
+        byte byte1 = r.ReadUInt8();
+        int long1 = r.ReadInt32();
+        int long2 = r.ReadInt32();
+        bool flag1 = r.ReadUInt8() != 0;
 
         int? modelIndex = null;
         float[]? modelOrigin = null, modelAngles = null;
@@ -653,24 +652,24 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
         bool? flagA = null, flagB = null;
         if (type != 0)
         {
-            if (r.ReadByte() != 0)
+            if (r.ReadUInt8() != 0)
             {
-                modelIndex = ReadInt32(r);
-                modelOrigin = ReadCoordVec3(r);
-                modelAngles = ReadAngleVec3(r);
+                modelIndex = r.ReadInt32();
+                modelOrigin = ReadCoordVec3(ref r);
+                modelAngles = ReadAngleVec3(ref r);
             }
             if (type == 1)
             {
-                if (r.ReadByte() != 0)
+                if (r.ReadUInt8() != 0)
                 {
-                    long3 = ReadInt32(r);
-                    long4 = ReadInt32(r);
+                    long3 = r.ReadInt32();
+                    long4 = r.ReadInt32();
                 }
             }
             else if (type == 2)
             {
-                flagA = r.ReadByte() != 0;
-                flagB = r.ReadByte() != 0;
+                flagA = r.ReadUInt8() != 0;
+                flagB = r.ReadUInt8() != 0;
             }
         }
         string? name = style == 2 ? r.ReadString() : null;
@@ -680,353 +679,353 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     }
 
     /// <summary>InvAdd (Sven): id(long), 3 flag bytes, time(float), 5 strings.</summary>
-    protected virtual void ParseInventoryAdd(MessageReader r)
+    protected virtual void ParseInventoryAdd(ref BufferReader r)
     {
-        int id = ReadInt32(r);
-        bool f1 = r.ReadByte() != 0, f2 = r.ReadByte() != 0, f3 = r.ReadByte() != 0;
-        float time = ReadFloat(r);
+        int id = r.ReadInt32();
+        bool f1 = r.ReadUInt8() != 0, f2 = r.ReadUInt8() != 0, f3 = r.ReadUInt8() != 0;
+        float time = ReadFloat(ref r);
         OnScInventoryAdd(new ScInventoryAddEvent(id, f1, f2, f3, time,
             r.ReadString(), r.ReadString(), r.ReadString(), r.ReadString(), r.ReadString()));
     }
 
     /// <summary>InvRemove (Sven): id (0 removes all) and a flag byte.</summary>
-    protected virtual void ParseInventoryRemove(MessageReader r)
+    protected virtual void ParseInventoryRemove(ref BufferReader r)
     {
-        OnScInventoryRemove(new ScInventoryRemoveEvent(ReadInt32(r), r.ReadByte()));
+        OnScInventoryRemove(new ScInventoryRemoveEvent(r.ReadInt32(), r.ReadUInt8()));
     }
 
     /// <summary>ToggleElem (Sven): HUD channel byte (0-31) and state byte.</summary>
-    protected virtual void ParseToggleElem(MessageReader r)
+    protected virtual void ParseToggleElem(ref BufferReader r)
     {
-        OnScToggleElem(new ScToggleElemEvent(r.ReadByte(), r.ReadByte() != 0));
+        OnScToggleElem(new ScToggleElemEvent(r.ReadUInt8(), r.ReadUInt8() != 0));
     }
 
     /// <summary>CustSpr (Sven): channel, flags(long), sprite, x, y, w(short), h(short),
     /// two RGBA quads, two bytes, five floats, final byte.</summary>
-    protected virtual void ParseCustomSprite(MessageReader r)
+    protected virtual void ParseCustomSprite(ref BufferReader r)
     {
-        byte channel = r.ReadByte();
-        int flags = ReadInt32(r);
+        byte channel = r.ReadUInt8();
+        int flags = r.ReadInt32();
         var sprite = r.ReadString();
-        byte x = r.ReadByte(), y = r.ReadByte();
-        short width = ReadShort(r), height = ReadShort(r);
-        byte r1 = r.ReadByte(), g1 = r.ReadByte(), b1 = r.ReadByte(), a1 = r.ReadByte();
-        byte r2 = r.ReadByte(), g2 = r.ReadByte(), b2 = r.ReadByte(), a2 = r.ReadByte();
-        byte unknown1 = r.ReadByte(), unknown2 = r.ReadByte();
+        byte x = r.ReadUInt8(), y = r.ReadUInt8();
+        short width = r.ReadInt16(), height = r.ReadInt16();
+        byte r1 = r.ReadUInt8(), g1 = r.ReadUInt8(), b1 = r.ReadUInt8(), a1 = r.ReadUInt8();
+        byte r2 = r.ReadUInt8(), g2 = r.ReadUInt8(), b2 = r.ReadUInt8(), a2 = r.ReadUInt8();
+        byte unknown1 = r.ReadUInt8(), unknown2 = r.ReadUInt8();
         var ev = new ScCustomSpriteEvent(channel, flags, sprite, x, y, width, height,
             r1, g1, b1, a1, r2, g2, b2, a2, unknown1, unknown2,
-            ReadFloat(r), ReadFloat(r), ReadFloat(r), ReadFloat(r), ReadFloat(r), r.ReadByte());
+            ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r), r.ReadUInt8());
         OnScCustomSprite(ev);
     }
 
     /// <summary>NumDisplay (Sven): channel, flags(long), value(float), x, y, width/height floats,
     /// two RGBA quads, font string, region bytes/shorts, four floats, final byte.</summary>
-    protected virtual void ParseNumDisplay(MessageReader r)
+    protected virtual void ParseNumDisplay(ref BufferReader r)
     {
-        byte channel = r.ReadByte();
-        int flags = ReadInt32(r);
-        float value = ReadFloat(r);
-        byte x = r.ReadByte(), y = r.ReadByte();
-        float width = ReadFloat(r), height = ReadFloat(r);
-        byte r1 = r.ReadByte(), g1 = r.ReadByte(), b1 = r.ReadByte(), a1 = r.ReadByte();
-        byte r2 = r.ReadByte(), g2 = r.ReadByte(), b2 = r.ReadByte(), a2 = r.ReadByte();
+        byte channel = r.ReadUInt8();
+        int flags = r.ReadInt32();
+        float value = ReadFloat(ref r);
+        byte x = r.ReadUInt8(), y = r.ReadUInt8();
+        float width = ReadFloat(ref r), height = ReadFloat(ref r);
+        byte r1 = r.ReadUInt8(), g1 = r.ReadUInt8(), b1 = r.ReadUInt8(), a1 = r.ReadUInt8();
+        byte r2 = r.ReadUInt8(), g2 = r.ReadUInt8(), b2 = r.ReadUInt8(), a2 = r.ReadUInt8();
         var font = r.ReadString();
-        byte regionX = r.ReadByte(), regionY = r.ReadByte();
-        short regionWidth = ReadShort(r), regionHeight = ReadShort(r);
+        byte regionX = r.ReadUInt8(), regionY = r.ReadUInt8();
+        short regionWidth = r.ReadInt16(), regionHeight = r.ReadInt16();
         var ev = new ScNumDisplayEvent(channel, flags, value, x, y, width, height,
             r1, g1, b1, a1, r2, g2, b2, a2, font, regionX, regionY, regionWidth, regionHeight,
-            ReadFloat(r), ReadFloat(r), ReadFloat(r), ReadFloat(r), r.ReadByte());
+            ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r), r.ReadUInt8());
         OnScNumDisplay(ev);
     }
 
     /// <summary>UpdateNum (Sven): channel byte and float value.</summary>
-    protected virtual void ParseUpdateNum(MessageReader r)
+    protected virtual void ParseUpdateNum(ref BufferReader r)
     {
-        OnScUpdateNum(new ScUpdateNumEvent(r.ReadByte(), ReadFloat(r)));
+        OnScUpdateNum(new ScUpdateNumEvent(r.ReadUInt8(), ReadFloat(ref r)));
     }
 
     /// <summary>TimeDisplay (Sven): like NumDisplay but with two leading value floats.</summary>
-    protected virtual void ParseTimeDisplay(MessageReader r)
+    protected virtual void ParseTimeDisplay(ref BufferReader r)
     {
-        byte channel = r.ReadByte();
-        int flags = ReadInt32(r);
-        float value1 = ReadFloat(r), value2 = ReadFloat(r);
-        float width = ReadFloat(r), height = ReadFloat(r);
-        byte r1 = r.ReadByte(), g1 = r.ReadByte(), b1 = r.ReadByte(), a1 = r.ReadByte();
-        byte r2 = r.ReadByte(), g2 = r.ReadByte(), b2 = r.ReadByte(), a2 = r.ReadByte();
+        byte channel = r.ReadUInt8();
+        int flags = r.ReadInt32();
+        float value1 = ReadFloat(ref r), value2 = ReadFloat(ref r);
+        float width = ReadFloat(ref r), height = ReadFloat(ref r);
+        byte r1 = r.ReadUInt8(), g1 = r.ReadUInt8(), b1 = r.ReadUInt8(), a1 = r.ReadUInt8();
+        byte r2 = r.ReadUInt8(), g2 = r.ReadUInt8(), b2 = r.ReadUInt8(), a2 = r.ReadUInt8();
         var font = r.ReadString();
-        byte regionX = r.ReadByte(), regionY = r.ReadByte();
-        short regionWidth = ReadShort(r), regionHeight = ReadShort(r);
+        byte regionX = r.ReadUInt8(), regionY = r.ReadUInt8();
+        short regionWidth = r.ReadInt16(), regionHeight = r.ReadInt16();
         var ev = new ScTimeDisplayEvent(channel, flags, value1, value2, width, height,
             r1, g1, b1, a1, r2, g2, b2, a2, font, regionX, regionY, regionWidth, regionHeight,
-            ReadFloat(r), ReadFloat(r), ReadFloat(r), ReadFloat(r), r.ReadByte());
+            ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r), r.ReadUInt8());
         OnScTimeDisplay(ev);
     }
 
     /// <summary>UpdateTime (Sven): channel byte, time float, duration float.</summary>
-    protected virtual void ParseUpdateTime(MessageReader r)
+    protected virtual void ParseUpdateTime(ref BufferReader r)
     {
-        OnScUpdateTime(new ScUpdateTimeEvent(r.ReadByte(), ReadFloat(r), ReadFloat(r)));
+        OnScUpdateTime(new ScUpdateTimeEvent(r.ReadUInt8(), ReadFloat(ref r), ReadFloat(ref r)));
     }
 
     /// <summary>WeaponSpr (Sven): HUD slot short and sprite name.</summary>
-    protected virtual void ParseWeaponSprite(MessageReader r)
+    protected virtual void ParseWeaponSprite(ref BufferReader r)
     {
-        short slot = ReadShort(r);
+        short slot = r.ReadInt16();
         ScWeaponSprite?.Invoke((slot, r.ReadString()));
     }
 
     /// <summary>CustWeapon (Sven): HUD slot short and custom weapon name.</summary>
-    protected virtual void ParseCustomWeapon(MessageReader r)
+    protected virtual void ParseCustomWeapon(ref BufferReader r)
     {
-        short slot = ReadShort(r);
+        short slot = r.ReadInt16();
         ScCustomWeapon?.Invoke((slot, r.ReadString()));
     }
 
     /// <summary>PrintKB (Sven): key binding name string.</summary>
-    protected virtual void ParseKeyBinding(MessageReader r)
+    protected virtual void ParseKeyBinding(ref BufferReader r)
     {
         ScKeyBinding?.Invoke(r.ReadString());
     }
 
     /// <summary>NotifyText (Sven): type byte and text.</summary>
-    protected virtual void ParseNotifyText(MessageReader r)
+    protected virtual void ParseNotifyText(ref BufferReader r)
     {
-        byte type = r.ReadByte();
+        byte type = r.ReadUInt8();
         ScNotifyText?.Invoke((type, r.ReadString()));
     }
 
     /// <summary>Gib (Sven): gib type byte (0, 1, 2, 4 valid) then origin and velocity triples.
     /// Unknown types carry no coordinates.</summary>
-    protected virtual void ParseGib(MessageReader r)
+    protected virtual void ParseGib(ref BufferReader r)
     {
-        byte type = r.ReadByte();
+        byte type = r.ReadUInt8();
         float ox = 0, oy = 0, oz = 0, vx = 0, vy = 0, vz = 0;
         if (type is 0 or 1 or 2 or 4)
         {
-            ox = ReadCoord32(r); oy = ReadCoord32(r); oz = ReadCoord32(r);
-            vx = ReadCoord32(r); vy = ReadCoord32(r); vz = ReadCoord32(r);
+            ox = ReadCoord32(ref r); oy = ReadCoord32(ref r); oz = ReadCoord32(ref r);
+            vx = ReadCoord32(ref r); vy = ReadCoord32(ref r); vz = ReadCoord32(ref r);
         }
         OnScGib(new ScGibEvent(type, ox, oy, oz, vx, vy, vz));
     }
 
     /// <summary>TE_CUSTOM (Sven): subtyped effect. Subtype 1: id(short), count(short),
     /// origin triple when count > 0. Subtype 3: one byte. Subtype 2: empty.</summary>
-    protected virtual void ParseTeCustom(MessageReader r)
+    protected virtual void ParseTeCustom(ref BufferReader r)
     {
-        byte subType = r.ReadByte();
+        byte subType = r.ReadUInt8();
         short id = 0, count = 0;
         float ox = 0, oy = 0, oz = 0;
         byte value = 0;
         if (subType == 1)
         {
-            id = ReadShort(r);
-            count = ReadShort(r);
+            id = r.ReadInt16();
+            count = r.ReadInt16();
             if (count > 0)
             {
-                ox = ReadCoord32(r); oy = ReadCoord32(r); oz = ReadCoord32(r);
+                ox = ReadCoord32(ref r); oy = ReadCoord32(ref r); oz = ReadCoord32(ref r);
             }
         }
         else if (subType == 3)
         {
-            value = r.ReadByte();
+            value = r.ReadUInt8();
         }
         OnScTeCustom(new ScTeCustomEvent(subType, id, count, ox, oy, oz, value));
     }
 
     /// <summary>CbElec (Sven): state byte — bits 0-4 entity index, bit 6 active.</summary>
-    protected virtual void ParseCbElec(MessageReader r)
+    protected virtual void ParseCbElec(ref BufferReader r)
     {
-        byte data = r.ReadByte();
+        byte data = r.ReadUInt8();
         OnScCbElec(new ScCbElecEvent((data & 0x40) != 0, (byte)(data & 0x1F)));
     }
 
     /// <summary>ShkFlash (Sven): origin triple plus mode byte (0 = fire, else impact).</summary>
-    protected virtual void ParseShkFlash(MessageReader r)
+    protected virtual void ParseShkFlash(ref BufferReader r)
     {
-        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
-        OnScShkFlash(new ScShkFlashEvent(x, y, z, r.ReadByte()));
+        float x = ReadCoord32(ref r), y = ReadCoord32(ref r), z = ReadCoord32(ref r);
+        OnScShkFlash(new ScShkFlashEvent(x, y, z, r.ReadUInt8()));
     }
 
     /// <summary>TracerDecal (Sven): start/end triples, decal type byte, trailing byte.</summary>
-    protected virtual void ParseTracerDecal(MessageReader r)
+    protected virtual void ParseTracerDecal(ref BufferReader r)
     {
-        float sx = ReadCoord32(r), sy = ReadCoord32(r), sz = ReadCoord32(r);
-        float ex = ReadCoord32(r), ey = ReadCoord32(r), ez = ReadCoord32(r);
-        byte type = r.ReadByte();
-        byte unknown = r.ReadByte();
+        float sx = ReadCoord32(ref r), sy = ReadCoord32(ref r), sz = ReadCoord32(ref r);
+        float ex = ReadCoord32(ref r), ey = ReadCoord32(ref r), ez = ReadCoord32(ref r);
+        byte type = r.ReadUInt8();
+        byte unknown = r.ReadUInt8();
         OnScTracerDecal(new ScTracerDecalEvent(sx, sy, sz, ex, ey, ez, type, unknown));
     }
 
     /// <summary>SporeTrail (Sven): entity short and attach flag byte.</summary>
-    protected virtual void ParseSporeTrail(MessageReader r)
+    protected virtual void ParseSporeTrail(ref BufferReader r)
     {
-        short entity = ReadShort(r);
-        OnScSporeTrail(new ScSporeTrailEvent(entity, r.ReadByte() != 0));
+        short entity = r.ReadInt16();
+        OnScSporeTrail(new ScSporeTrailEvent(entity, r.ReadUInt8() != 0));
     }
 
     /// <summary>CreateBlood (Sven): origin triple, colour byte, amount byte.</summary>
-    protected virtual void ParseCreateBlood(MessageReader r)
+    protected virtual void ParseCreateBlood(ref BufferReader r)
     {
-        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
-        OnScCreateBlood(new ScCreateBloodEvent(x, y, z, r.ReadByte(), r.ReadByte()));
+        float x = ReadCoord32(ref r), y = ReadCoord32(ref r), z = ReadCoord32(ref r);
+        OnScCreateBlood(new ScCreateBloodEvent(x, y, z, r.ReadUInt8(), r.ReadUInt8()));
     }
 
     /// <summary>GargSplash (Sven): origin triple plus colour triple. The client reads the
     /// colour channels as coordinates and takes their absolute value (float bit-mask AND),
     /// then feeds them to the splash temp entity as floats.</summary>
-    protected virtual void ParseGargSplash(MessageReader r)
+    protected virtual void ParseGargSplash(ref BufferReader r)
     {
-        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
-        float cr = MathF.Abs(ReadCoord32(r));
-        float cg = MathF.Abs(ReadCoord32(r));
-        float cb = MathF.Abs(ReadCoord32(r));
+        float x = ReadCoord32(ref r), y = ReadCoord32(ref r), z = ReadCoord32(ref r);
+        float cr = MathF.Abs(ReadCoord32(ref r));
+        float cg = MathF.Abs(ReadCoord32(ref r));
+        float cb = MathF.Abs(ReadCoord32(ref r));
         OnScGargSplash(new ScGargSplashEvent(x, y, z, cr, cg, cb));
     }
 
     /// <summary>StartSound (Sven): flag-driven fields; see <see cref="ScStartSoundEvent"/>.</summary>
-    protected virtual void ParseStartSound(MessageReader r)
+    protected virtual void ParseStartSound(ref BufferReader r)
     {
-        short flags = ReadShort(r);
-        short? entity = (flags & 0x10) != 0 ? ReadShort(r) : null;
-        byte? volume = (flags & 0x01) != 0 ? r.ReadByte() : null;
-        byte? attenuation = (flags & 0x02) != 0 ? r.ReadByte() : null;
-        byte? pitch = (flags & 0x04) != 0 ? r.ReadByte() : null;
+        short flags = r.ReadInt16();
+        short? entity = (flags & 0x10) != 0 ? r.ReadInt16() : null;
+        byte? volume = (flags & 0x01) != 0 ? r.ReadUInt8() : null;
+        byte? attenuation = (flags & 0x02) != 0 ? r.ReadUInt8() : null;
+        byte? pitch = (flags & 0x04) != 0 ? r.ReadUInt8() : null;
         float? ox = null, oy = null, oz = null;
         if ((flags & 0x08) != 0)
         {
-            ox = ReadCoord32(r); oy = ReadCoord32(r); oz = ReadCoord32(r);
+            ox = ReadCoord32(ref r); oy = ReadCoord32(ref r); oz = ReadCoord32(ref r);
         }
-        float? duration = (flags & 0x8000) != 0 ? ReadFloat(r) : null;
-        byte channel = r.ReadByte();
-        short soundIndex = ReadShort(r);
+        float? duration = (flags & 0x8000) != 0 ? ReadFloat(ref r) : null;
+        byte channel = r.ReadUInt8();
+        short soundIndex = r.ReadInt16();
         OnScStartSound(new ScStartSoundEvent(flags, entity, volume, attenuation, pitch, ox, oy, oz, duration, channel, soundIndex));
     }
 
     /// <summary>ToxicCloud (Sven): origin triple.</summary>
-    protected virtual void ParseToxicCloud(MessageReader r)
+    protected virtual void ParseToxicCloud(ref BufferReader r)
     {
-        OnScToxicCloud(new ScToxicCloudEvent(ReadCoord32(r), ReadCoord32(r), ReadCoord32(r)));
+        OnScToxicCloud(new ScToxicCloudEvent(ReadCoord32(ref r), ReadCoord32(ref r), ReadCoord32(ref r)));
     }
 
     /// <summary>SRDetonate (Sven): origin triple and radius byte.</summary>
-    protected virtual void ParseSrDetonate(MessageReader r)
+    protected virtual void ParseSrDetonate(ref BufferReader r)
     {
-        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
-        OnScSrDetonate(new ScSrDetonateEvent(x, y, z, r.ReadByte()));
+        float x = ReadCoord32(ref r), y = ReadCoord32(ref r), z = ReadCoord32(ref r);
+        OnScSrDetonate(new ScSrDetonateEvent(x, y, z, r.ReadUInt8()));
     }
 
     /// <summary>SRPrimed (Sven): entity byte and fuse float.</summary>
-    protected virtual void ParseSrPrimed(MessageReader r)
+    protected virtual void ParseSrPrimed(ref BufferReader r)
     {
-        byte entity = r.ReadByte();
-        OnScSrPrimed(new ScSrPrimedEvent(entity, ReadFloat(r)));
+        byte entity = r.ReadUInt8();
+        OnScSrPrimed(new ScSrPrimedEvent(entity, ReadFloat(ref r)));
     }
 
     /// <summary>SRPrimedOff (Sven): entity byte.</summary>
-    protected virtual void ParseSrPrimedOff(MessageReader r)
+    protected virtual void ParseSrPrimedOff(ref BufferReader r)
     {
-        OnScSrPrimedOff(new ScSrPrimedOffEvent(r.ReadByte()));
+        OnScSrPrimedOff(new ScSrPrimedOffEvent(r.ReadUInt8()));
     }
 
     /// <summary>RampSprite (Sven): entity short, life byte, origin triple, flags short, then
     /// optional per-flag fields; see <see cref="ScRampSpriteEvent"/>.</summary>
-    protected virtual void ParseRampSprite(MessageReader r)
+    protected virtual void ParseRampSprite(ref BufferReader r)
     {
-        short entity = ReadShort(r);
-        byte lifeTicks = r.ReadByte();
-        float x = ReadCoord32(r), y = ReadCoord32(r), z = ReadCoord32(r);
-        short flags = ReadShort(r);
+        short entity = r.ReadInt16();
+        byte lifeTicks = r.ReadUInt8();
+        float x = ReadCoord32(ref r), y = ReadCoord32(ref r), z = ReadCoord32(ref r);
+        short flags = r.ReadInt16();
 
         byte? startTime = null, fadeIn = null, fadeOut = null, renderModeFx = null;
         byte? red = null, green = null, blue = null, unknownBit15 = null;
-        if ((flags & 0x1) != 0) startTime = r.ReadByte();
-        if ((flags & 0x2) != 0) fadeIn = r.ReadByte();
-        if ((flags & 0x4) != 0) fadeOut = r.ReadByte();
-        if ((flags & 0x8) != 0) renderModeFx = r.ReadByte();
-        if ((flags & 0x10) != 0) red = r.ReadByte();
-        if ((flags & 0x20) != 0) green = r.ReadByte();
-        if ((flags & 0x40) != 0) blue = r.ReadByte();
-        if ((flags & 0x8000) != 0) unknownBit15 = r.ReadByte();
+        if ((flags & 0x1) != 0) startTime = r.ReadUInt8();
+        if ((flags & 0x2) != 0) fadeIn = r.ReadUInt8();
+        if ((flags & 0x4) != 0) fadeOut = r.ReadUInt8();
+        if ((flags & 0x8) != 0) renderModeFx = r.ReadUInt8();
+        if ((flags & 0x10) != 0) red = r.ReadUInt8();
+        if ((flags & 0x20) != 0) green = r.ReadUInt8();
+        if ((flags & 0x40) != 0) blue = r.ReadUInt8();
+        if ((flags & 0x8000) != 0) unknownBit15 = r.ReadUInt8();
 
         float? color2R = null, color2G = null, color2B = null;
         if ((flags & 0x100) != 0)
         {
-            color2R = ReadCoord32(r); color2G = ReadCoord32(r); color2B = ReadCoord32(r);
+            color2R = ReadCoord32(ref r); color2G = ReadCoord32(ref r); color2B = ReadCoord32(ref r);
         }
 
         OnScRampSprite(new ScRampSpriteEvent(entity, lifeTicks, x, y, z, flags,
             startTime, fadeIn, fadeOut, renderModeFx, red, green, blue, unknownBit15,
             color2R, color2G, color2B,
-            (flags & 0x200) != 0 ? r.ReadByte() : null,
-            (flags & 0x400) != 0 ? r.ReadByte() : null,
-            (flags & 0x800) != 0 ? r.ReadByte() : null,
-            (flags & 0x1000) != 0 ? r.ReadByte() : null,
-            (flags & 0x2000) != 0 ? r.ReadByte() : null,
-            (flags & 0x4000) != 0 ? r.ReadByte() : null,
-            (flags & 0x8000) != 0 ? r.ReadByte() : null));
+            (flags & 0x200) != 0 ? r.ReadUInt8() : null,
+            (flags & 0x400) != 0 ? r.ReadUInt8() : null,
+            (flags & 0x800) != 0 ? r.ReadUInt8() : null,
+            (flags & 0x1000) != 0 ? r.ReadUInt8() : null,
+            (flags & 0x2000) != 0 ? r.ReadUInt8() : null,
+            (flags & 0x4000) != 0 ? r.ReadUInt8() : null,
+            (flags & 0x8000) != 0 ? r.ReadUInt8() : null));
     }
 
     /// <summary>ShieldRic (Sven): origin triple.</summary>
-    protected virtual void ParseShieldRic(MessageReader r)
+    protected virtual void ParseShieldRic(ref BufferReader r)
     {
-        OnScShieldRic(new ScShieldRicEvent(ReadCoord32(r), ReadCoord32(r), ReadCoord32(r)));
+        OnScShieldRic(new ScShieldRicEvent(ReadCoord32(ref r), ReadCoord32(ref r), ReadCoord32(ref r)));
     }
 
     /// <summary>WeatherFX (Sven): type short, min/max triples, angle triple, then a fixed
     /// tail of short/byte/float groups passed through opaquely by the client.</summary>
-    protected virtual void ParseWeatherFx(MessageReader r)
+    protected virtual void ParseWeatherFx(ref BufferReader r)
     {
-        short type = ReadShort(r);
-        float minX = ReadCoord32(r), minY = ReadCoord32(r), minZ = ReadCoord32(r);
-        float maxX = ReadCoord32(r), maxY = ReadCoord32(r), maxZ = ReadCoord32(r);
-        float ax = ReadAngle(r), ay = ReadAngle(r), az = ReadAngle(r);
-        short unknownShort1 = ReadShort(r);
-        float float1 = ReadFloat(r);
-        byte byte1 = r.ReadByte();
-        short unknownShort2 = ReadShort(r);
-        float float2 = ReadFloat(r);
-        byte byte2 = r.ReadByte(), byte3 = r.ReadByte();
-        float float3 = ReadFloat(r);
-        byte byte4 = r.ReadByte(), byte5 = r.ReadByte(), byte6 = r.ReadByte(), byte7 = r.ReadByte();
+        short type = r.ReadInt16();
+        float minX = ReadCoord32(ref r), minY = ReadCoord32(ref r), minZ = ReadCoord32(ref r);
+        float maxX = ReadCoord32(ref r), maxY = ReadCoord32(ref r), maxZ = ReadCoord32(ref r);
+        float ax = ReadAngle(ref r), ay = ReadAngle(ref r), az = ReadAngle(ref r);
+        short unknownShort1 = r.ReadInt16();
+        float float1 = ReadFloat(ref r);
+        byte byte1 = r.ReadUInt8();
+        short unknownShort2 = r.ReadInt16();
+        float float2 = ReadFloat(ref r);
+        byte byte2 = r.ReadUInt8(), byte3 = r.ReadUInt8();
+        float float3 = ReadFloat(ref r);
+        byte byte4 = r.ReadUInt8(), byte5 = r.ReadUInt8(), byte6 = r.ReadUInt8(), byte7 = r.ReadUInt8();
         var ev = new ScWeatherFxEvent(type, minX, minY, minZ, maxX, maxY, maxZ, ax, ay, az,
             unknownShort1, float1, byte1, unknownShort2, float2, byte2, byte3, float3,
-            byte4, byte5, byte6, byte7, ReadFloat(r), ReadFloat(r), ReadFloat(r), ReadFloat(r));
+            byte4, byte5, byte6, byte7, ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r), ReadFloat(ref r));
         OnScWeatherFx(ev);
     }
 
     /// <summary>CameraMouse (Sven): mode byte; mode 2 carries a parameter string.</summary>
-    protected virtual void ParseCameraMouse(MessageReader r)
+    protected virtual void ParseCameraMouse(ref BufferReader r)
     {
-        byte mode = r.ReadByte();
+        byte mode = r.ReadUInt8();
         OnScCameraMouse(new ScCameraMouseEvent(mode, mode == 2 ? r.ReadString() : string.Empty));
     }
 
     /// <summary>Flamethwr (Sven): entity byte plus start/end triples.</summary>
-    protected virtual void ParseFlamethrower(MessageReader r)
+    protected virtual void ParseFlamethrower(ref BufferReader r)
     {
-        byte entity = r.ReadByte();
-        float sx = ReadCoord32(r), sy = ReadCoord32(r), sz = ReadCoord32(r);
-        float ex = ReadCoord32(r), ey = ReadCoord32(r), ez = ReadCoord32(r);
+        byte entity = r.ReadUInt8();
+        float sx = ReadCoord32(ref r), sy = ReadCoord32(ref r), sz = ReadCoord32(ref r);
+        float ex = ReadCoord32(ref r), ey = ReadCoord32(ref r), ez = ReadCoord32(ref r);
         OnScFlamethrower(new ScFlamethrowerEvent(entity, sx, sy, sz, ex, ey, ez));
     }
 
     /// <summary>ChangeSky (Sven): sky name string and colour triple (-1s keep the default).</summary>
-    protected virtual void ParseChangeSky(MessageReader r)
+    protected virtual void ParseChangeSky(ref BufferReader r)
     {
         var sky = r.ReadString();
-        float cr = ReadCoord32(r), cg = ReadCoord32(r), cb = ReadCoord32(r);
+        float cr = ReadCoord32(ref r), cg = ReadCoord32(ref r), cb = ReadCoord32(ref r);
         OnScChangeSky(new ScChangeSkyEvent(sky, cr, cg, cb));
     }
 
     /// <summary>ClServerInfo (Sven): flag byte, 32-bit value and key string.</summary>
-    protected virtual void ParseClServerInfo(MessageReader r)
+    protected virtual void ParseClServerInfo(ref BufferReader r)
     {
-        OnScClServerInfo(new ScClServerInfoEvent(r.ReadByte(), ReadInt32(r), r.ReadString()));
+        OnScClServerInfo(new ScClServerInfoEvent(r.ReadUInt8(), r.ReadInt32(), r.ReadString()));
     }
 
     /// <summary>EndVote (Sven): empty payload.</summary>
-    protected virtual void ParseEndVote(MessageReader r)
+    protected virtual void ParseEndVote(ref BufferReader r)
     {
         // no payload — arrival itself clears the vote UI
     }
@@ -1034,19 +1033,19 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// <summary>MapList (Sven): decoded from CMapVotePanel's vtable+0x21C virtual. A command
     /// byte selects reset (0: clears the list and stores the total count), close (0x7B), or
     /// an incremental update (start/end shorts plus one map-name string per entry).</summary>
-    protected virtual void ParseMapList(MessageReader r)
+    protected virtual void ParseMapList(ref BufferReader r)
     {
-        byte command = r.ReadByte();
+        byte command = r.ReadUInt8();
         short totalMaps = 0, startIndex = 0, endIndex = 0;
         string[] mapNames = [];
         if (command == 0)
         {
-            totalMaps = ReadShort(r);
+            totalMaps = r.ReadInt16();
         }
         else if (command != 0x7B)
         {
-            startIndex = ReadShort(r);
-            endIndex = ReadShort(r);
+            startIndex = r.ReadInt16();
+            endIndex = r.ReadInt16();
             int count = endIndex - startIndex;
             if (count > 0)
             {
@@ -1061,9 +1060,9 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// <summary>VoteMenu (Sven): decoded from the vote panel's vtable+0x214 virtual:
     /// vote id byte, question string, yes-label and no-label strings (empty labels
     /// fall back to "#Menu_Yes"/"#Menu_No" on the client).</summary>
-    protected virtual void ParseVoteMenu(MessageReader r)
+    protected virtual void ParseVoteMenu(ref BufferReader r)
     {
-        byte voteId = r.ReadByte();
+        byte voteId = r.ReadUInt8();
         OnScVoteMenu(new ScVoteMenuEvent(voteId, r.ReadString(), r.ReadString(), r.ReadString()));
     }
 
@@ -1074,24 +1073,20 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// "playerIndex\nauthId\n\"name\"\nlevel" which updates the scoreboard's per-player
     /// admin level; the key material never leaves the client, so only the framing is
     /// decoded here.</summary>
-    protected virtual void ParseClExtrasInfo(MessageReader r)
+    protected virtual void ParseClExtrasInfo(ref BufferReader r)
     {
-        int plainLength = ReadInt32(r);
-        byte[] iv = ReadBlock(r);
-        byte[] encryptedData = ReadBlock(r);
-        byte[] encryptedDigest = ReadBlock(r);
+        int plainLength = r.ReadInt32();
+        byte[] iv = ReadBlock(ref r);
+        byte[] encryptedData = ReadBlock(ref r);
+        byte[] encryptedDigest = ReadBlock(ref r);
         OnScClExtrasInfo(new ScClExtrasInfoEvent(plainLength, iv, encryptedData, encryptedDigest));
     }
 
     /// <summary>Reads a 32-bit length followed by that many bytes (empty on invalid length).</summary>
-    private static byte[] ReadBlock(MessageReader r)
+    private static byte[] ReadBlock(ref BufferReader r)
     {
-        int length = ReadInt32(r);
-        if (length <= 0)
-            return [];
-        var data = new byte[length];
-        r.ReadBytes(data);
-        return data;
+        int length = r.ReadInt32();
+        return length <= 0 ? [] : r.ReadBytes(length);
     }
 
     // ── read helpers ──
@@ -1100,33 +1095,31 @@ public class SvenCoopMessageHandler : HalfLifeMessageHandler
     /// unlike stock GoldSrc's 16-bit coordinate. Verified against the dedicated server's
     /// user-message registration sizes (Damage=18, Fog=24, WeatherFX=68, ShkFlash=13,
     /// CreateBlood=14, SRDetonate=13, ShieldRic=12), which only add up with 4-byte coords.</summary>
-    protected static float ReadCoord32(MessageReader r)
+    protected static float ReadCoord32(ref BufferReader r)
     {
-        r.ReadInt32(out int raw);
-        return raw / 8.0f;
+        return r.ReadInt32() / 8.0f;
     }
 
-    /// <summary>Reads a little-endian 32-bit float (0 on overflow).</summary>
-    protected static float ReadFloat(MessageReader r)
+    /// <summary>Reads a little-endian 32-bit float.</summary>
+    protected static float ReadFloat(ref BufferReader r)
     {
-        r.ReadSingle(out float value);
-        return value;
+        return r.ReadSingle();
     }
 
     /// <summary>Reads a signed byte.</summary>
-    protected static sbyte ReadSByte(MessageReader r) => (sbyte)r.ReadByte();
+    protected static sbyte ReadSByte(ref BufferReader r) => (sbyte)r.ReadUInt8();
 
     /// <summary>Reads a Sven angle: signed byte scaled by 360/256 (1.40625).</summary>
-    protected static float ReadAngle(MessageReader r) => ReadSByte(r) * (360f / 256f);
+    protected static float ReadAngle(ref BufferReader r) => ReadSByte(ref r) * (360f / 256f);
 
     /// <summary>Reads a Sven 16-bit angle: signed short scaled by 360/65536.</summary>
-    protected static float ReadAngle16(MessageReader r) => ReadShort(r) * (360f / 65536f);
+    protected static float ReadAngle16(ref BufferReader r) => r.ReadInt16() * (360f / 65536f);
 
     /// <summary>Reads three coordinates into an array (READ_COORD_vec3 helper order).</summary>
-    protected static float[] ReadCoordVec3(MessageReader r) =>
-        [ReadCoord32(r), ReadCoord32(r), ReadCoord32(r)];
+    protected static float[] ReadCoordVec3(ref BufferReader r) =>
+        [ReadCoord32(ref r), ReadCoord32(ref r), ReadCoord32(ref r)];
 
     /// <summary>Reads three angles into an array (READ_ANGLE_vec3 helper order).</summary>
-    protected static float[] ReadAngleVec3(MessageReader r) =>
-        [ReadAngle(r), ReadAngle(r), ReadAngle(r)];
+    protected static float[] ReadAngleVec3(ref BufferReader r) =>
+        [ReadAngle(ref r), ReadAngle(ref r), ReadAngle(ref r)];
 }

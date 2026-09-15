@@ -6,7 +6,7 @@ using GoldsrcNetClient.Core.Handshake;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
-using GoldsrcNetClient.Core.Util;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.SteamProvider;
 using Microsoft.Extensions.Logging;
 using QRCoder;

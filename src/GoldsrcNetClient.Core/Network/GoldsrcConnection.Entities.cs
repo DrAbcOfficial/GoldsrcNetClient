@@ -1,7 +1,6 @@
 using GoldsrcNetClient.Core.Delta;
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Protocol;
-using GoldsrcNetClient.Core.Util;
 using Microsoft.Extensions.Logging;
 
 namespace GoldsrcNetClient.Core.Network;
@@ -9,9 +8,8 @@ namespace GoldsrcNetClient.Core.Network;
 /// <summary>
 /// Bitstream parsers for entity/state server messages: delta descriptions,
 /// spawn baselines, clientdata, events, sounds, pings, damage and temp entities.
-/// Every parser works on absolute bit indexes seeded from the byte-level
-/// reader (<c>bitIdx = reader.Offset * 8</c>) and converts back with
-/// <c>reader.Offset = (bitIdx + 7) / 8</c>.
+/// The shared <see cref="BufferReader"/> drives both byte and bit reads from
+/// one position — no manual bit↔byte bridging.
 /// </summary>
 public partial class GoldsrcConnection
 {
@@ -21,42 +19,27 @@ public partial class GoldsrcConnection
     /// every table inside SV_SendServerinfo, before any delta-compressed
     /// payload, so consumers can rely on the live definitions being present.
     /// Each field entry is itself a delta record against the engine's fixed
-    /// meta description (see <see cref="DeltaReader.TryReadFieldDescription"/>).
+    /// meta description (see <see cref="DeltaReader.ReadFieldDescription"/>).
     /// </summary>
-    private bool HandleDeltaDescription(ConnectionContext ctx, MessageReader reader)
+    private bool HandleDeltaDescription(ConnectionContext ctx, ref BufferReader reader)
     {
         string name = reader.ReadString();
         Logger.LogDebug($"[DeltaDescription] deltaName=\"{name}\"");
 
-        int bitIdx = reader.Offset * 8;
-        uint fieldCount = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref fieldCount, 16))
-        {
-            Logger.LogWarning("[DeltaDescription] failed reading fieldCount");
-            return false;
-        }
+        uint fieldCount = reader.ReadBits(16);
         if (fieldCount > 96)
-        {
-            Logger.LogWarning($"[DeltaDescription] implausible fieldCount={fieldCount} for \"{name}\"");
-            return false;
-        }
+            throw new InvalidDataException($"Implausible delta fieldCount={fieldCount} for \"{name}\".");
 
         var fields = new List<DeltaField>((int)fieldCount);
         for (uint f = 0; f < fieldCount; f++)
         {
-            if (!DeltaReader.TryReadFieldDescription(reader.Data, reader.Size, ref bitIdx, _variant.DeltaByteCountBits,
-                    out var desc))
-            {
-                Logger.LogWarning($"[DeltaDescription] failed parsing field {f} of \"{name}\"");
-                return false;
-            }
+            var desc = DeltaReader.ReadFieldDescription(ref reader, _variant.DeltaByteCountBits);
             fields.Add(desc.ToDeltaField());
             Logger.LogDebug($"[DeltaDescription] \"{name}\"[{f}] {desc.FieldName} type={desc.FieldType} bits={desc.SignificantBits} pre={desc.Premultiply} post={desc.PostMultiply}");
         }
 
-        reader.Offset = (bitIdx + 7) / 8;
         ctx.DeltaTables[name] = new DeltaType(name, (byte)fieldCount, fields.ToArray());
-        Logger.LogDebug($"[DeltaDescription] registered \"{name}\" with {fieldCount} fields (offset={reader.Offset})");
+        Logger.LogDebug($"[DeltaDescription] registered \"{name}\" with {fieldCount} fields (offset={reader.BytePosition})");
         return true;
     }
 
@@ -68,7 +51,7 @@ public partial class GoldsrcConnection
     private static DeltaType ResolveDelta(ConnectionContext ctx, DeltaType fallback)
         => ctx.DeltaTables.TryGetValue(fallback.DeltaName, out var dt) ? dt : fallback;
 
-    private bool HandleSpawnBaseline(ConnectionContext ctx, MessageReader reader)
+    private bool HandleSpawnBaseline(ConnectionContext ctx, ref BufferReader reader)
     {
         // Sven widened the entity-number field: hw.dll's SV_CreateBaseline reads
         // the width from a variable (FUN_01da9fa0) with the 0xFFFF/16-bit end
@@ -84,29 +67,18 @@ public partial class GoldsrcConnection
             return true;
         }
 
-        int bitIdx = reader.Offset * 8;
         int entityCount = 0;
         while (true)
         {
-            uint entityNumber = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entityNumber, entBits))
-            {
-                Logger.LogWarning($"[SpawnBaseline] failed reading entityNumber at count={entityCount}");
-                return false;
-            }
+            uint entityNumber = reader.ReadBits(entBits);
 
             if (entityNumber == maxEntity)
             {
-                bitIdx += 16 - entBits;
+                reader.ReadBits(16 - entBits); // rest of the 16-bit end marker
                 break;
             }
 
-            uint entityType = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entityType, 2))
-            {
-                Logger.LogWarning($"[SpawnBaseline] failed reading entityType at entity={entityNumber}");
-                return false;
-            }
+            uint entityType = reader.ReadBits(2);
 
             DeltaType dt;
             if ((entityType & 1) != 0)
@@ -121,173 +93,134 @@ public partial class GoldsrcConnection
                 dt = ResolveDelta(ctx, DeltaDefinitions.CustomEntityState);
             }
 
-            DeltaReader.ReadFields(dt, reader.Data, reader.Size, ref bitIdx, _variant.DeltaByteCountBits);
+            DeltaReader.ReadFields(dt, ref reader, _variant.DeltaByteCountBits);
             entityCount++;
         }
 
-        uint baselineCount = 0;
-        BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref baselineCount, 6);
+        uint baselineCount = reader.ReadBits(6);
         Logger.LogDebug($"[SpawnBaseline] entities={entityCount}, baselineCount={baselineCount}");
         var baselineDelta = ResolveDelta(ctx, DeltaDefinitions.EntityState);
         for (uint ei = 0; ei < baselineCount; ei++)
-            DeltaReader.ReadFields(baselineDelta, reader.Data, reader.Size, ref bitIdx, _variant.DeltaByteCountBits);
+            DeltaReader.ReadFields(baselineDelta, ref reader, _variant.DeltaByteCountBits);
 
-        reader.Offset = (bitIdx + 7) / 8;
-        Logger.LogDebug($"[SpawnBaseline] done, totalBits={bitIdx}, newOffset={reader.Offset}");
+        reader.Align();
+        Logger.LogDebug($"[SpawnBaseline] done, bitPosition={reader.BitPosition}, newOffset={reader.BytePosition}");
 
         TrySendSpawn(ctx);
 
         return true;
     }
 
-    private bool HandleClientData(ConnectionContext ctx, MessageReader reader)
+    private bool HandleClientData(ConnectionContext ctx, ref BufferReader reader)
     {
-        int bitIdx = reader.Offset * 8;
-        uint haveDeltaSeq = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref haveDeltaSeq, 1)) return false;
+        uint haveDeltaSeq = reader.ReadBits(1);
         if (haveDeltaSeq != 0)
         {
-            uint deltaSeq = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref deltaSeq, 8)) return false;
+            uint deltaSeq = reader.ReadBits(8);
             Logger.LogDebug($"[ClientData] deltaSeq={deltaSeq}");
         }
         var clientDelta = ResolveDelta(ctx, DeltaDefinitions.ClientData);
         var weaponDelta = ResolveDelta(ctx, DeltaDefinitions.WeaponData);
-        DeltaReader.ReadFields(clientDelta, reader.Data, reader.Size, ref bitIdx, _variant.DeltaByteCountBits);
+        DeltaReader.ReadFields(clientDelta, ref reader, _variant.DeltaByteCountBits);
 
         int weaponCount = 0;
         while (true)
         {
-            uint haveDelta = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref haveDelta, 1)) return false;
+            uint haveDelta = reader.ReadBits(1);
             if (haveDelta == 0) break;
-            uint index = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref index, 6)) return false;
-            DeltaReader.ReadFields(weaponDelta, reader.Data, reader.Size, ref bitIdx, _variant.DeltaByteCountBits);
+            reader.ReadBits(6); // weapon index
+            DeltaReader.ReadFields(weaponDelta, ref reader, _variant.DeltaByteCountBits);
             weaponCount++;
         }
         Logger.LogDebug($"[ClientData] done, weaponDeltas={weaponCount}");
-        reader.Offset = (bitIdx + 7) / 8;
+        reader.Align();
         return true;
     }
 
-    private bool HandleEvent(ConnectionContext ctx, MessageReader reader, bool reliable)
+    private bool HandleEvent(ConnectionContext ctx, ref BufferReader reader, bool reliable)
     {
         // svc_event:      5 bits count, then per event: 10 bits index,
         //                 1 bit ent-in-pack -> 11 bits packet index,
         //                 1 bit has-args -> delta event_args_t, 1 bit has-fire -> 16 bits.
         // svc_event_reliable: same per-event layout without the count and packet index.
-        int bitIdx = reader.Offset * 8;
         var eventDelta = ResolveDelta(ctx, DeltaDefinitions.Event);
         uint count = 1;
-        if (!reliable && !BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref count, 5))
-            return false;
+        if (!reliable)
+            count = reader.ReadBits(5);
 
         for (uint e = 0; e < count; e++)
         {
-            uint eventIndex = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref eventIndex, 10)) return false;
+            uint eventIndex = reader.ReadBits(10);
 
             if (!reliable)
             {
-                uint hasEnts = 0;
-                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasEnts, 1)) return false;
+                uint hasEnts = reader.ReadBits(1);
                 if (hasEnts != 0)
-                {
-                    uint packetIndex = 0;
-                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref packetIndex, 11)) return false;
-                }
+                    reader.ReadBits(11); // packet index
             }
 
             if (!reliable)
             {
-                uint hasArgs = 0;
-                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasArgs, 1)) return false;
-                if (hasArgs != 0 && !DeltaReader.ReadFields(eventDelta, reader.Data, reader.Size, ref bitIdx, _variant.DeltaByteCountBits))
-                    return false;
+                uint hasArgs = reader.ReadBits(1);
+                if (hasArgs != 0)
+                    DeltaReader.ReadFields(eventDelta, ref reader, _variant.DeltaByteCountBits);
             }
-            else if (!DeltaReader.ReadFields(eventDelta, reader.Data, reader.Size, ref bitIdx, _variant.DeltaByteCountBits))
+            else
             {
-                return false;
+                DeltaReader.ReadFields(eventDelta, ref reader, _variant.DeltaByteCountBits);
             }
 
-            uint hasFire = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasFire, 1)) return false;
+            uint hasFire = reader.ReadBits(1);
             if (hasFire != 0)
-            {
-                uint fireTime = 0;
-                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref fireTime, 16)) return false;
-            }
+                reader.ReadBits(16); // fire time
 
             Logger.LogDebug($"[Event] index={eventIndex}{(reliable ? " (reliable)" : "")}");
         }
 
-        reader.Offset = (bitIdx + 7) / 8;
+        reader.Align();
         return true;
     }
 
-    private bool HandleSound(MessageReader reader)
+    private bool HandleSound(ref BufferReader reader)
     {
-        int bitIdx = reader.Offset * 8;
-        uint fieldMask = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref fieldMask, 9)) return false;
+        uint fieldMask = reader.ReadBits(9);
 
         if ((fieldMask & SoundFlags.Volume) != 0)
-        {
-            uint vol = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref vol, 8)) return false;
-        }
+            reader.ReadBits(8);
         if ((fieldMask & SoundFlags.Attenuation) != 0)
-        {
-            uint attn = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref attn, 8)) return false;
-        }
+            reader.ReadBits(8);
 
-        uint channel = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref channel, 3)) return false;
+        uint channel = reader.ReadBits(3);
         // Entity index uses the same entity-bits width as the baselines.
-        uint entity = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref entity, _variant.EntityIndexBits)) return false;
-        uint soundNum = 0;
+        uint entity = reader.ReadBits(_variant.EntityIndexBits);
         int snBits = (fieldMask & SoundFlags.LargeIndex) != 0 ? 16 : 8;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref soundNum, snBits)) return false;
+        uint soundNum = reader.ReadBits(snBits);
 
-        float ox = 0, oy = 0, oz = 0;
-        uint xf = 0, yf = 0, zf = 0;
-        BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref xf, 1);
-        BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref yf, 1);
-        BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref zf, 1);
-        if (xf != 0) ReadCoord(reader.Data, ref bitIdx, reader.Size, ref ox);
-        if (yf != 0) ReadCoord(reader.Data, ref bitIdx, reader.Size, ref oy);
-        if (zf != 0) ReadCoord(reader.Data, ref bitIdx, reader.Size, ref oz);
+        uint xf = reader.ReadBits(1);
+        uint yf = reader.ReadBits(1);
+        uint zf = reader.ReadBits(1);
+        if (xf != 0) ReadCoord(ref reader);
+        if (yf != 0) ReadCoord(ref reader);
+        if (zf != 0) ReadCoord(ref reader);
 
         if ((fieldMask & SoundFlags.Pitch) != 0)
-        {
-            uint pitch = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref pitch, 8)) return false;
-        }
+            reader.ReadBits(8);
         Logger.LogDebug($"[Sound] channel={channel}, entity={entity}, soundNum={soundNum}, fieldMask=0x{fieldMask:X4}");
-        reader.Offset = (bitIdx + 7) / 8;
+        reader.Align();
         return true;
     }
 
-    private bool HandlePings(MessageReader reader)
+    private bool HandlePings(ref BufferReader reader)
     {
-        int bitIdx = reader.Offset * 8;
         for (int i = 0; i < 32; i++)
         {
-            uint hasEntry = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasEntry, 1))
-                break;
+            uint hasEntry = reader.ReadBits(1);
             if (hasEntry == 0) break;
-            uint slot = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref slot, 5)) return true;
-            uint ping = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref ping, 12)) return true;
-            uint loss = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref loss, 7)) return true;
+            reader.ReadBits(5); // slot
+            reader.ReadBits(12); // ping
+            reader.ReadBits(7); // loss
         }
-        reader.Offset = (bitIdx + 7) / 8;
+        reader.Align();
         return true;
     }
 
@@ -295,15 +228,14 @@ public partial class GoldsrcConnection
     /// svc_tempentity: one effect type byte followed by a bit-packed payload
     /// whose layout depends on the type. See <see cref="TempEntityParser.Skip"/>.
     /// </summary>
-    private bool HandleTempEntity(MessageReader reader)
+    private bool HandleTempEntity(ref BufferReader reader)
     {
-        int bitIdx = reader.Offset * 8;
-        if (!TempEntityParser.Skip(reader.Data, ref bitIdx, reader.Size, _variant, Logger))
+        if (!TempEntityParser.Skip(ref reader, _variant))
         {
             Logger.LogWarning("[TempEntity] unparseable effect, aborting packet");
             return false;
         }
-        reader.Offset = (bitIdx + 7) / 8;
+        reader.Align();
         return true;
     }
 
@@ -311,18 +243,13 @@ public partial class GoldsrcConnection
     /// svc_damage (Quake-inherited layout): armor byte, blood byte, then three
     /// bit coordinates for the damage origin — always present.
     /// </summary>
-    private bool HandleDamage(MessageReader reader)
+    private bool HandleDamage(ref BufferReader reader)
     {
-        int bitIdx = reader.Offset * 8;
-        uint armor = 0, blood = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref armor, 8)) return false;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref blood, 8)) return false;
+        reader.ReadBits(8); // armor
+        reader.ReadBits(8); // blood
         for (int i = 0; i < 3; i++)
-        {
-            float c = 0;
-            ReadCoord(reader.Data, ref bitIdx, reader.Size, ref c);
-        }
-        reader.Offset = (bitIdx + 7) / 8;
+            ReadCoord(ref reader);
+        reader.Align();
         return true;
     }
 
@@ -330,8 +257,11 @@ public partial class GoldsrcConnection
     /// Reads one coordinate with the width matching the target engine branch:
     /// Sven's 32-bit 16.16 fixed point, or Valve's 18-bit bit coordinate.
     /// </summary>
-    private bool ReadCoord(byte[] data, ref int bitIdx, int size, ref float value)
-        => _variant.WideCoordinates
-            ? BitReader.ReadCoordWide(data, ref bitIdx, size, ref value)
-            : BitReader.ReadBitCoord(data, ref bitIdx, size, ref value);
+    private void ReadCoord(ref BufferReader reader)
+    {
+        if (_variant.WideCoordinates)
+            reader.ReadBitCoordWide();
+        else
+            reader.ReadBitCoord();
+    }
 }

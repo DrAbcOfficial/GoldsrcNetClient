@@ -1,6 +1,5 @@
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Protocol;
-using GoldsrcNetClient.Core.Util;
 using Microsoft.Extensions.Logging;
 
 namespace GoldsrcNetClient.Core.Network;
@@ -11,7 +10,7 @@ namespace GoldsrcNetClient.Core.Network;
 /// </summary>
 public partial class GoldsrcConnection
 {
-    private void ProcessResourceList(ConnectionContext ctx, MessageReader reader)
+    private void ProcessResourceList(ConnectionContext ctx, ref BufferReader reader)
     {
         // Field widths follow the engine branch (Ghidra: SV_SendResources
         // FUN_01da4200 / consistency FUN_01db83a0 in hw.dll build 10257):
@@ -23,9 +22,7 @@ public partial class GoldsrcConnection
         int countBits = _variant.ResourceIndexBits;
         int absIndexBits = _variant.ConsistencyIndexBits;
 
-        int bitIdx = reader.Offset * 8;
-        uint resourceCount = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref resourceCount, countBits)) return;
+        uint resourceCount = reader.ReadBits(countBits);
         Logger.LogDebug($"[ResourceList] resourceCount={resourceCount}");
 
         ctx.Resources = new ResourceInfo[resourceCount];
@@ -34,57 +31,46 @@ public partial class GoldsrcConnection
             var r = new ResourceInfo();
             ctx.Resources[i] = r;
 
-            uint type = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref type, 4)) return;
+            reader.ReadBits(4); // type
 
-            if (!BitReader.ReadBitString(reader.Data, ref bitIdx, reader.Size, out r.Name)) return;
-            if (r.Name.Length > 64) return;
+            r.Name = reader.ReadBitString();
+            if (r.Name.Length > 64)
+                throw new InvalidDataException("Resource name exceeds 64 bytes.");
 
-            uint resIdx = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref resIdx, 12)) return;
-            uint dlSize = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref dlSize, 24)) return;
-            uint flag = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref flag, 3)) return;
+            reader.ReadBits(12); // resource index
+            reader.ReadBits(24); // download size
+            uint flag = reader.ReadBits(3);
             r.Flag = (byte)flag;
 
-            if ((r.Flag & (byte)ResourceFlag.Custom) != 0
-                && !ReadFixedBytes(reader.Data, ref bitIdx, reader.Size, 16, out r.Md5)) return;
+            if ((r.Flag & (byte)ResourceFlag.Custom) != 0)
+                r.Md5 = ReadFixedBytes(ref reader, 16);
 
-            uint hasReserved = 0;
-            if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasReserved, 1)) return;
-            if (hasReserved != 0
-                && !ReadFixedBytes(reader.Data, ref bitIdx, reader.Size, 32, out r.Reserved)) return;
+            uint hasReserved = reader.ReadBits(1);
+            if (hasReserved != 0)
+                r.Reserved = ReadFixedBytes(ref reader, 32);
 
             r.NeedConsistency = false;
         }
 
-        uint hasConsistency = 0;
-        if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref hasConsistency, 1)) return;
+        uint hasConsistency = reader.ReadBits(1);
 
         if (hasConsistency != 0)
         {
             int lastIndex = 0;
             while (true)
             {
-                uint haveFile = 0;
-                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref haveFile, 1)) return;
+                uint haveFile = reader.ReadBits(1);
                 if (haveFile == 0) break;
 
-                uint indexOrDiff = 0;
-                if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref indexOrDiff, 1)) return;
+                uint indexOrDiff = reader.ReadBits(1);
 
                 if (indexOrDiff == 0)
                 {
-                    uint idx = 0;
-                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref idx, absIndexBits)) return;
-                    lastIndex = (int)idx;
+                    lastIndex = (int)reader.ReadBits(absIndexBits);
                 }
                 else
                 {
-                    uint diff = 0;
-                    if (!BitReader.ReadBits(reader.Data, ref bitIdx, reader.Size, ref diff, 5)) return;
-                    lastIndex += (int)diff;
+                    lastIndex += (int)reader.ReadBits(5);
                 }
 
                 if (lastIndex < ctx.Resources.Length)
@@ -95,20 +81,15 @@ public partial class GoldsrcConnection
             }
         }
 
-        reader.Offset = (bitIdx + 7) / 8;
+        reader.Align();
     }
 
     /// <summary>Reads <paramref name="count"/> raw bytes from the bitstream.</summary>
-    private static bool ReadFixedBytes(byte[] data, ref int bitIdx, int size, int count, out byte[] bytes)
+    private static byte[] ReadFixedBytes(ref BufferReader reader, int count)
     {
-        bytes = new byte[count];
+        var bytes = new byte[count];
         for (int b = 0; b < count; b++)
-        {
-            uint v = 0;
-            if (!BitReader.ReadBits(data, ref bitIdx, size, ref v, 8))
-                return false;
-            bytes[b] = (byte)v;
-        }
-        return true;
+            bytes[b] = (byte)reader.ReadBits(8);
+        return bytes;
     }
 }

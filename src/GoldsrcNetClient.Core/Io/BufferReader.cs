@@ -166,6 +166,23 @@ public ref struct BufferReader(ReadOnlySpan<byte> buffer)
     /// </summary>
     public string ReadStringLine() => ReadDelimited(b => b == 0 || b == (byte)'\n');
 
+    /// <summary>
+    /// Reads a null-terminated raw byte string without decoding. Throws when the
+    /// terminator is missing — for protocols (A2S) where an unterminated string
+    /// means a malformed reply, not a lenient tail read. Requires byte alignment.
+    /// </summary>
+    public byte[] ReadStringBytes()
+    {
+        if ((_bitPos & 7) != 0)
+            throw new InvalidOperationException("ReadStringBytes requires byte alignment.");
+        int start = BytePosition;
+        int relative = _buffer[start..].IndexOf((byte)0);
+        if (relative < 0)
+            throw new EndOfBufferException("String is not null-terminated.");
+        _bitPos = (start + relative + 1) << 3;
+        return _buffer[start..(start + relative)].ToArray();
+    }
+
     private string ReadDelimited(Func<byte, bool> isTerminator)
     {
         if ((_bitPos & 7) == 0)
@@ -266,6 +283,13 @@ public ref struct BufferReader(ReadOnlySpan<byte> buffer)
     /// bit-coordinate with a ±4096 integer range).
     /// </summary>
     public float ReadBitCoordWide() => (int)ReadBits(32) / 65536.0f;
+
+    /// <summary>
+    /// Reads the byte-aligned 16-bit fixed-point coordinate used inside user
+    /// messages (signed short / 8): a distinct encoding from the bit-packed
+    /// <see cref="ReadBitCoord"/> used by engine messages.
+    /// </summary>
+    public float ReadCoord16() => ReadInt16() / 8f;
 
     /// <summary>
     /// Reads a GoldSrc compressed angle encoded in <paramref name="numBits"/> bits,

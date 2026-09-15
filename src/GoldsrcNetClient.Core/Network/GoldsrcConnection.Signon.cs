@@ -1,4 +1,4 @@
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Munge;
 using GoldsrcNetClient.Core.Protocol;
 using Microsoft.Extensions.Logging;
@@ -14,14 +14,9 @@ namespace GoldsrcNetClient.Core.Network;
 /// </summary>
 public partial class GoldsrcConnection
 {
-    private bool HandleServerInfo(ConnectionContext ctx, MessageReader reader)
+    private bool HandleServerInfo(ConnectionContext ctx, ref BufferReader reader)
     {
-        const int structSize = 33;
-        if (!reader.ReadStruct<ServerInfoData>(out var si))
-        {
-            Logger.LogWarning($"[ServerInfo] buffer overflow: offset={reader.Offset}, need={structSize}, size={reader.Size}");
-            return false;
-        }
+        var si = reader.ReadStruct<ServerInfoData>();
 
         ctx.MaxClients = si.MaxClients;
         ctx.PlayerNumber = si.PlayerNumber;
@@ -30,8 +25,8 @@ public partial class GoldsrcConnection
         // COM_Munge3(..., (-1 - playernum) & 0xFF) (ReHLDS SV_SendServerinfo,
         // Xash3D same). A wider key does not invert it and corrupts the CRC we
         // echo back in the spawn command — the server's periodic
-        // SV_CheckMapDifferences then flags us as overflowed ("Reliable channel
-        // overflowed") within ~5 seconds.
+        // SV_CheckMapsDifferences then flags us as overflowed ("Reliable
+        // channel overflowed") within ~5 seconds.
         int unmungeKey = (-1 - ctx.PlayerNumber) & 0xFF;
         Logger.LogDebug($"[ServerInfo] proto={si.ProtocolVersion}, spawnCount={si.SpawnCount}, maxClients={si.MaxClients}, playerNum={si.PlayerNumber}, worldmapCrcRaw=0x{si.Munge3WorldmapCrc:X8}, unmungeKey=0x{unmungeKey:X2}");
         if (_variant.PlaintextWorldmapCrc)
@@ -53,8 +48,8 @@ public partial class GoldsrcConnection
         for (int i = 0; i < 4; i++)
             reader.ReadString();
 
-        if (reader.Offset < reader.Size)
-            reader.Offset++;
+        if (reader.Remaining > 0)
+            reader.Skip(1);
 
         OnServerInfo?.Invoke(this, si);
 
@@ -68,11 +63,9 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private bool HandleResourceRequest(ConnectionContext ctx, MessageReader reader)
+    private bool HandleResourceRequest(ConnectionContext ctx, ref BufferReader reader)
     {
-        if (reader.Offset + 4 > reader.Size) { Logger.LogWarning("[ResourceRequest] buffer overflow"); return false; }
         ctx.SpawnCount = reader.ReadUInt32();
-        if (reader.Offset + 4 > reader.Size) { Logger.LogWarning("[ResourceRequest] buffer overflow after spawnCount"); return false; }
         uint startIndex = reader.ReadUInt32();
         Logger.LogDebug($"[ResourceRequest] spawnCount={ctx.SpawnCount}, startIndex={startIndex}");
 
@@ -85,10 +78,14 @@ public partial class GoldsrcConnection
         return true;
     }
 
-    private bool HandleSignOnNum(MessageReader reader)
+    private bool HandleSignOnNum(ref BufferReader reader)
     {
-        if (reader.Offset + 1 > reader.Size) { Logger.LogWarning("[SignOnNum] buffer overflow"); return true; }
-        byte signOn = reader.Data[reader.Offset++];
+        if (reader.Remaining < 1)
+        {
+            Logger.LogWarning("[SignOnNum] buffer overflow");
+            return true;
+        }
+        byte signOn = reader.ReadUInt8();
         Logger.LogDebug($"[SignOnNum] value={signOn}");
         if (signOn == 1)
         {

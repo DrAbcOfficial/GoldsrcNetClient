@@ -84,6 +84,20 @@ public class BufferReaderTests
     }
 
     [Fact]
+    public void StringBytes_ReturnsRawWithoutTerminator()
+    {
+        var reader = new BufferReader("AB\0CD"u8.ToArray());
+        Assert.Equal("AB"u8.ToArray(), reader.ReadStringBytes());
+        Assert.Equal("CD", reader.ReadString()); // stream stays in sync
+    }
+
+    [Fact]
+    public void StringBytes_Unterminated_Throws()
+    {
+        Assert.Throws<EndOfBufferException>(() => new BufferReader((byte[])[0x41]).ReadStringBytes());
+    }
+
+    [Fact]
     public void Overflow_ThrowsEndOfBuffer()
     {
         var reader = new BufferReader((byte[])[0x01]);

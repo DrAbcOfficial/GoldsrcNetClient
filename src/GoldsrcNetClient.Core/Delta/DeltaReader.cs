@@ -1,5 +1,5 @@
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Protocol;
-using GoldsrcNetClient.Core.Util;
 
 namespace GoldsrcNetClient.Core.Delta;
 
@@ -19,27 +19,19 @@ namespace GoldsrcNetClient.Core.Delta;
 public static class DeltaReader
 {
     /// <summary>
-    /// Skips one delta-compressed record of type <paramref name="dt"/> at the given
-    /// bit position, advancing <paramref name="bitIdx"/> past it.
+    /// Skips one delta-compressed record of type <paramref name="dt"/> at the
+    /// reader's bit position, advancing past it.
     /// </summary>
     /// <param name="byteCountBits">Width of the bitmap byte-count prefix (3 Valve, 4 Sven).</param>
-    public static bool ReadFields(DeltaType dt, byte[] data, int size, ref int bitIdx, int byteCountBits = 3)
+    public static void ReadFields(DeltaType dt, ref BufferReader reader, int byteCountBits = 3)
     {
-        uint byteCount = 0;
-        if (!BitReader.ReadBits(data, ref bitIdx, size, ref byteCount, byteCountBits))
-            return false;
-
+        uint byteCount = reader.ReadBits(byteCountBits);
         if (byteCount > dt.FieldAmount / 8 + (dt.FieldAmount % 8 != 0 ? 1 : 0))
-            return false;
+            throw new InvalidDataException($"Delta bitmap byte count {byteCount} exceeds the field count of \"{dt.DeltaName}\".");
 
         ulong markArray = 0;
         for (uint i = 0; i < byteCount; i++)
-        {
-            uint b = 0;
-            if (!BitReader.ReadBits(data, ref bitIdx, size, ref b, 8))
-                return false;
-            markArray |= (ulong)b << (int)(i * 8);
-        }
+            markArray |= (ulong)reader.ReadBits(8) << (int)(i * 8);
 
         uint toIterate = byteCount * 8;
         if (toIterate > dt.FieldAmount) toIterate = dt.FieldAmount;
@@ -54,25 +46,17 @@ public static class DeltaReader
                     // Null-terminated with no fixed cap: clientdata_t.physinfo
                     // carries the whole userinfo string and routinely exceeds
                     // 32 bytes (a cap here desynchronises the stream).
-                    while (true)
+                    while (reader.ReadBits(8) != 0)
                     {
-                        uint ch = 0;
-                        if (!BitReader.ReadBits(data, ref bitIdx, size, ref ch, 8))
-                            return false;
-                        if (ch == 0) break;
                     }
                 }
                 else
                 {
-                    uint filler = 0;
-                    if (!BitReader.ReadBits(data, ref bitIdx, size, ref filler, field.Bits))
-                        return false;
+                    reader.ReadBits(field.Bits);
                 }
             }
             markArray >>= 1;
         }
-
-        return true;
     }
 
     /// <summary>
@@ -90,29 +74,18 @@ public static class DeltaReader
 
     /// <summary>
     /// Reads one delta_description_t field entry (the payload of
-    /// svc_deltadescription fields), advancing <paramref name="bitIdx"/> past it.
+    /// svc_deltadescription fields), advancing the reader past it.
     /// </summary>
     /// <param name="byteCountBits">Width of the bitmap byte-count prefix (3 Valve, 4 Sven).</param>
-    /// <param name="description">Decoded field description.</param>
-    public static bool TryReadFieldDescription(byte[] data, int size, ref int bitIdx, int byteCountBits,
-        out DeltaFieldDescription description)
+    public static DeltaFieldDescription ReadFieldDescription(ref BufferReader reader, int byteCountBits)
     {
-        description = default;
-
-        uint byteCount = 0;
-        if (!BitReader.ReadBits(data, ref bitIdx, size, ref byteCount, byteCountBits))
-            return false;
+        uint byteCount = reader.ReadBits(byteCountBits);
         if (byteCount > 8)
-            return false;
+            throw new InvalidDataException($"Delta description bitmap byte count {byteCount} exceeds the meta field count.");
 
         ulong markArray = 0;
         for (uint i = 0; i < byteCount; i++)
-        {
-            uint b = 0;
-            if (!BitReader.ReadBits(data, ref bitIdx, size, ref b, 8))
-                return false;
-            markArray |= (ulong)b << (int)(i * 8);
-        }
+            markArray |= (ulong)reader.ReadBits(8) << (int)(i * 8);
 
         uint toIterate = byteCount * 8;
         if (toIterate > MetaFieldCount) toIterate = MetaFieldCount;
@@ -131,36 +104,22 @@ public static class DeltaReader
             {
                 switch (i)
                 {
-                    case 0:
-                        if (!BitReader.ReadBits(data, ref bitIdx, size, ref fieldType, 32)) return false;
-                        break;
-                    case 1:
-                        if (!BitReader.ReadBitString(data, ref bitIdx, size, out nameBytes)) return false;
-                        break;
-                    case 2:
-                        if (!BitReader.ReadBits(data, ref bitIdx, size, ref fieldOffset, 16)) return false;
-                        break;
-                    case 3:
-                        if (!BitReader.ReadBits(data, ref bitIdx, size, ref fieldSize, 8)) return false;
-                        break;
-                    case 4:
-                        if (!BitReader.ReadBits(data, ref bitIdx, size, ref sigBits, 8)) return false;
-                        break;
-                    case 5:
-                        if (!BitReader.ReadBits(data, ref bitIdx, size, ref preWire, 32)) return false;
-                        break;
-                    case 6:
-                        if (!BitReader.ReadBits(data, ref bitIdx, size, ref postWire, 32)) return false;
-                        break;
+                    case 0: fieldType = reader.ReadBits(32); break;
+                    case 1: nameBytes = reader.ReadBitString(); break;
+                    case 2: fieldOffset = reader.ReadBits(16); break;
+                    case 3: fieldSize = reader.ReadBits(8); break;
+                    case 4: sigBits = reader.ReadBits(8); break;
+                    case 5: preWire = reader.ReadBits(32); break;
+                    case 6: postWire = reader.ReadBits(32); break;
                 }
             }
             markArray >>= 1;
         }
 
         if (fieldType == 0 || sigBits == 0)
-            return false;
+            throw new InvalidDataException("Delta description entry has no field type or significant bits.");
 
-        description = new DeltaFieldDescription
+        return new DeltaFieldDescription
         {
             FieldName = System.Text.Encoding.ASCII.GetString(nameBytes),
             FieldType = (DeltaFieldFlag)fieldType,
@@ -171,6 +130,5 @@ public static class DeltaReader
             Premultiply = preWire / MetaFloatScale,
             PostMultiply = postWire / MetaFloatScale,
         };
-        return true;
     }
 }

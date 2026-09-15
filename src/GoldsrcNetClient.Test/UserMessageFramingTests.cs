@@ -1,5 +1,5 @@
 using GoldsrcNetClient.Core.Game;
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using System.Text;
@@ -17,13 +17,19 @@ public class UserMessageFramingTests
         return [index, size, .. nameBytes];
     }
 
+    private static void Register(GameMessageHandler handler, byte[] registration)
+    {
+        var reader = new BufferReader(registration);
+        handler.Registry.Register(ref reader);
+    }
+
     private sealed class TestGameHandler : GameMessageHandler
     {
         public List<RawUserMessage> RawMessages { get; } = [];
 
-        protected override bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, MessageReader reader)
+        protected override bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, ref BufferReader reader)
         {
-            RawMessages.Add(new RawUserMessage(index, name, reader.Data[reader.Offset..reader.Size].ToArray()));
+            RawMessages.Add(new RawUserMessage(index, name, reader.RemainingSpan.ToArray()));
             return true;
         }
     }
@@ -47,13 +53,13 @@ public class UserMessageFramingTests
 
         using var conn = new GoldsrcConnection();
         var handler = new TestGameHandler();
-        handler.Registry.Register(new MessageReader(stream.ToArray(), 18));
+        Register(handler, stream.ToArray()[..18]);
 
-        var reader = new MessageReader(stream.ToArray(), stream.Count) { Offset = 18 };
+        var reader = new BufferReader(stream.ToArray()) { BytePosition = 18 };
 
-        Assert.True(handler.HandleMessage(conn, 0x4C, reader));
-        Assert.Equal(18 + 6, reader.Offset); // 16-bit length word + 4 payload bytes consumed
-        Assert.Equal((byte)ServerMessageType.Print, reader.Data[reader.Offset]);
+        Assert.True(handler.HandleMessage(conn, 0x4C, ref reader));
+        Assert.Equal(18 + 6, reader.BytePosition); // 16-bit length word + 4 payload bytes consumed
+        Assert.Equal((byte)ServerMessageType.Print, reader.RemainingSpan[0]);
     }
 
     [Fact]
@@ -65,14 +71,14 @@ public class UserMessageFramingTests
 
         using var conn = new GoldsrcConnection();
         var handler = new TestGameHandler();
-        handler.Registry.Register(new MessageReader(Registration(0x4C, 0xFF, "SayText")));
-        var reader = new MessageReader(stream.ToArray(), stream.Count) { Offset = 1 };
+        Register(handler, Registration(0x4C, 0xFF, "SayText"));
+        var reader = new BufferReader(stream.ToArray()) { BytePosition = 1 };
 
-        Assert.True(handler.HandleMessage(conn, 0x4C, reader));
+        Assert.True(handler.HandleMessage(conn, 0x4C, ref reader));
         var raw = Assert.Single(handler.RawMessages);
         Assert.Equal("SayText", raw.Name);
         Assert.Equal(new byte[] { 0xAA, 0xBB, 0xCC }, raw.Data);
-        Assert.Equal(6, reader.Offset);
+        Assert.Equal(6, reader.BytePosition);
     }
 
     [Fact]
@@ -85,12 +91,12 @@ public class UserMessageFramingTests
 
         using var conn = new GoldsrcConnection();
         var handler = new TestGameHandler();
-        handler.Registry.Register(new MessageReader(Registration(0x50, 0x00, "InitHUD")));
+        Register(handler, Registration(0x50, 0x00, "InitHUD"));
 
-        var reader = new MessageReader(stream.ToArray(), stream.Count) { Offset = 1 };
-        Assert.True(handler.HandleMessage(conn, 0x50, reader));
-        Assert.Equal(1, reader.Offset);
-        Assert.Equal((byte)ServerMessageType.Print, reader.Data[reader.Offset]);
+        var reader = new BufferReader(stream.ToArray()) { BytePosition = 1 };
+        Assert.True(handler.HandleMessage(conn, 0x50, ref reader));
+        Assert.Equal(1, reader.BytePosition);
+        Assert.Equal((byte)ServerMessageType.Print, reader.RemainingSpan[0]);
     }
 
     [Fact]
@@ -101,11 +107,11 @@ public class UserMessageFramingTests
 
         using var conn = new GoldsrcConnection();
         var handler = new TestGameHandler();
-        handler.Registry.Register(new MessageReader(Registration(0x47, 0x01, "Health")));
+        Register(handler, Registration(0x47, 0x01, "Health"));
 
-        var reader = new MessageReader(stream.ToArray(), stream.Count) { Offset = 1 };
-        Assert.True(handler.HandleMessage(conn, 0x47, reader));
-        Assert.Equal(2, reader.Offset);
-        Assert.Equal((byte)ServerMessageType.Print, reader.Data[reader.Offset]);
+        var reader = new BufferReader(stream.ToArray()) { BytePosition = 1 };
+        Assert.True(handler.HandleMessage(conn, 0x47, ref reader));
+        Assert.Equal(2, reader.BytePosition);
+        Assert.Equal((byte)ServerMessageType.Print, reader.RemainingSpan[0]);
     }
 }

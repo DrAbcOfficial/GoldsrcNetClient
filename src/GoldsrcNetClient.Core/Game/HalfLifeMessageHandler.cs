@@ -1,4 +1,4 @@
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Network;
 using Microsoft.Extensions.Logging;
 
@@ -152,46 +152,46 @@ public class HalfLifeMessageHandler : GameMessageHandler
     #endregion
 
     /// <inheritdoc />
-    protected override bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, MessageReader reader)
+    protected override bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, ref BufferReader reader)
     {
         switch (name)
         {
             case "ReqState":
                 // The game DLL asks the client to re-send its state; the vanilla
                 // client replies with the "fullupdate" console command.
-                ParseReqState(connection, reader);
+                ParseReqState(connection, ref reader);
                 return true;
-            case "CurWeapon": ParseCurWeapon(reader); return true;
-            case "Damage": ParseDamage(reader); return true;
-            case "DeathMsg": ParseDeathMsg(reader); return true;
-            case "Health": ParseHealth(reader); return true;
-            case "Battery": ParseBattery(reader); return true;
-            case "AmmoX": ParseAmmoX(reader); return true;
-            case "AmmoPickup": ParseAmmoPickup(reader); return true;
-            case "FlashBat": ParseFlashBat(reader); return true;
-            case "Flashlight": ParseFlashlight(reader); return true;
-            case "GameMode": ParseGameMode(reader); return true;
-            case "GameTitle": ParseGameTitle(reader); return true;
-            case "Geiger": ParseGeiger(reader); return true;
-            case "HideWeapon": ParseHideWeapon(reader); return true;
-            case "HudText": ParseHudText(reader); return true;
-            case "InitHUD": ParseInitHUD(reader); return true;
-            case "ItemPickup": ParseItemPickup(reader); return true;
-            case "ScreenFade": ParseScreenFade(reader); return true;
-            case "ScreenShake": ParseScreenShake(reader); return true;
-            case "SetFOV": ParseSetFOV(reader); return true;
-            case "StatusIcon": ParseStatusIcon(reader); return true;
-            case "TeamInfo": ParseTeamInfo(reader); return true;
-            case "TextMsg": ParseTextMsg(reader); return true;
-            case "WeaponList": ParseWeaponList(reader); return true;
-            case "WeapPickup": ParseWeapPickup(reader); return true;
-            case "SayText": ParseSayText(reader); return true;
-            case "Train": ParseTrain(reader); return true;
-            case "VGUIMenu": ParseVguiMenu(reader); return true;
-            case "ResetHUD": ParseResetHUD(reader); return true;
-            case "Concuss": ParseConcuss(reader); return true;
-            case "HudColor": ParseHudColor(reader); return true;
-            case "Fog": ParseFog(reader); return true;
+            case "CurWeapon": ParseCurWeapon(ref reader); return true;
+            case "Damage": ParseDamage(ref reader); return true;
+            case "DeathMsg": ParseDeathMsg(ref reader); return true;
+            case "Health": ParseHealth(ref reader); return true;
+            case "Battery": ParseBattery(ref reader); return true;
+            case "AmmoX": ParseAmmoX(ref reader); return true;
+            case "AmmoPickup": ParseAmmoPickup(ref reader); return true;
+            case "FlashBat": ParseFlashBat(ref reader); return true;
+            case "Flashlight": ParseFlashlight(ref reader); return true;
+            case "GameMode": ParseGameMode(ref reader); return true;
+            case "GameTitle": ParseGameTitle(ref reader); return true;
+            case "Geiger": ParseGeiger(ref reader); return true;
+            case "HideWeapon": ParseHideWeapon(ref reader); return true;
+            case "HudText": ParseHudText(ref reader); return true;
+            case "InitHUD": ParseInitHUD(ref reader); return true;
+            case "ItemPickup": ParseItemPickup(ref reader); return true;
+            case "ScreenFade": ParseScreenFade(ref reader); return true;
+            case "ScreenShake": ParseScreenShake(ref reader); return true;
+            case "SetFOV": ParseSetFOV(ref reader); return true;
+            case "StatusIcon": ParseStatusIcon(ref reader); return true;
+            case "TeamInfo": ParseTeamInfo(ref reader); return true;
+            case "TextMsg": ParseTextMsg(ref reader); return true;
+            case "WeaponList": ParseWeaponList(ref reader); return true;
+            case "WeapPickup": ParseWeapPickup(ref reader); return true;
+            case "SayText": ParseSayText(ref reader); return true;
+            case "Train": ParseTrain(ref reader); return true;
+            case "VGUIMenu": ParseVguiMenu(ref reader); return true;
+            case "ResetHUD": ParseResetHUD(ref reader); return true;
+            case "Concuss": ParseConcuss(ref reader); return true;
+            case "HudColor": ParseHudColor(ref reader); return true;
+            case "Fog": ParseFog(ref reader); return true;
             default: return false;
         }
     }
@@ -199,199 +199,199 @@ public class HalfLifeMessageHandler : GameMessageHandler
     /// <summary>ReqState: the game DLL's voice manager requests the client's voice state;
     /// the vanilla client replies with the <c>VModEnable 1</c> console command. Unanswered
     /// polls keep the server re-queueing state until its reliable channel overflows.</summary>
-    protected virtual void ParseReqState(GoldsrcConnection connection, MessageReader r)
+    protected virtual void ParseReqState(GoldsrcConnection connection, ref BufferReader reader)
     {
-        r.Offset = r.Size; // consume the opaque payload
+        reader.BytePosition = reader.Length; // consume the opaque payload
         connection.Logger.LogDebug("[ReqState] replying VModEnable 1");
         _ = connection.SendStringCmdAsync(Protocol.ClientCommandType.StringCmd, "VModEnable 1");
     }
 
     /// <summary>CurWeapon: byte IsActive, byte WeaponId, byte ClipAmmo</summary>
-    protected virtual void ParseCurWeapon(MessageReader r)
+    protected virtual void ParseCurWeapon(ref BufferReader r)
     {
-        var ev = new CurWeaponEvent(r.ReadByte(), r.ReadByte(), r.ReadByte());
+        var ev = new CurWeaponEvent(r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8());
         OnCurWeapon(ev);
     }
 
-    protected virtual void ParseDamage(MessageReader r)
+    protected virtual void ParseDamage(ref BufferReader r)
     {
-        var ev = new DamageEvent(r.ReadByte(), r.ReadByte(), ReadInt32(r), ReadCoord(r), ReadCoord(r), ReadCoord(r));
+        var ev = new DamageEvent(r.ReadUInt8(), r.ReadUInt8(), r.ReadInt32(), r.ReadCoord16(), r.ReadCoord16(), r.ReadCoord16());
         OnDamage(ev);
     }
 
-    protected virtual void ParseDeathMsg(MessageReader r)
+    protected virtual void ParseDeathMsg(ref BufferReader r)
     {
-        var ev = new DeathMsgEvent(r.ReadByte(), r.ReadByte(), 0, r.ReadString());
+        var ev = new DeathMsgEvent(r.ReadUInt8(), r.ReadUInt8(), 0, r.ReadString());
         OnDeathMsg(ev);
     }
 
-    protected virtual void ParseHealth(MessageReader r)
+    protected virtual void ParseHealth(ref BufferReader r)
     {
-        var ev = new HealthEvent(r.ReadByte());
+        var ev = new HealthEvent(r.ReadUInt8());
         OnHealth(ev);
     }
 
-    protected virtual void ParseBattery(MessageReader r)
+    protected virtual void ParseBattery(ref BufferReader r)
     {
-        var ev = new BatteryEvent(ReadShort(r));
+        var ev = new BatteryEvent(r.ReadInt16());
         OnBattery(ev);
     }
 
-    protected virtual void ParseAmmoX(MessageReader r)
+    protected virtual void ParseAmmoX(ref BufferReader r)
     {
-        var ev = new AmmoXEvent(r.ReadByte(), r.ReadByte());
+        var ev = new AmmoXEvent(r.ReadUInt8(), r.ReadUInt8());
         OnAmmoX(ev);
     }
 
-    protected virtual void ParseAmmoPickup(MessageReader r)
+    protected virtual void ParseAmmoPickup(ref BufferReader r)
     {
-        var ev = new AmmoPickupEvent(r.ReadByte(), r.ReadByte());
+        var ev = new AmmoPickupEvent(r.ReadUInt8(), r.ReadUInt8());
         OnAmmoPickup(ev);
     }
 
-    protected virtual void ParseFlashBat(MessageReader r)
+    protected virtual void ParseFlashBat(ref BufferReader r)
     {
-        var ev = new FlashBatEvent(r.ReadByte());
+        var ev = new FlashBatEvent(r.ReadUInt8());
         OnFlashBat(ev);
     }
 
-    protected virtual void ParseFlashlight(MessageReader r)
+    protected virtual void ParseFlashlight(ref BufferReader r)
     {
-        var ev = new FlashlightEvent(r.ReadByte(), r.ReadByte());
+        var ev = new FlashlightEvent(r.ReadUInt8(), r.ReadUInt8());
         OnFlashlight(ev);
     }
 
-    protected virtual void ParseGameMode(MessageReader r)
+    protected virtual void ParseGameMode(ref BufferReader r)
     {
-        var ev = new GameModeEvent(r.ReadByte());
+        var ev = new GameModeEvent(r.ReadUInt8());
         OnGameMode(ev);
     }
 
-    protected virtual void ParseGameTitle(MessageReader r)
+    protected virtual void ParseGameTitle(ref BufferReader r)
     {
-        var ev = new GameTitleEvent(r.ReadByte());
+        var ev = new GameTitleEvent(r.ReadUInt8());
         OnGameTitle(ev);
     }
 
-    protected virtual void ParseGeiger(MessageReader r)
+    protected virtual void ParseGeiger(ref BufferReader r)
     {
-        var ev = new GeigerEvent(r.ReadByte());
+        var ev = new GeigerEvent(r.ReadUInt8());
         OnGeiger(ev);
     }
 
-    protected virtual void ParseHideWeapon(MessageReader r)
+    protected virtual void ParseHideWeapon(ref BufferReader r)
     {
-        var ev = new HideWeaponEvent(r.ReadByte());
+        var ev = new HideWeaponEvent(r.ReadUInt8());
         OnHideWeapon(ev);
     }
 
-    protected virtual void ParseHudText(MessageReader r)
+    protected virtual void ParseHudText(ref BufferReader r)
     {
-        var ev = new HudTextEvent(r.ReadString(), r.ReadByte());
+        var ev = new HudTextEvent(r.ReadString(), r.ReadUInt8());
         OnHudText(ev);
     }
 
-    protected virtual void ParseInitHUD(MessageReader r)
+    protected virtual void ParseInitHUD(ref BufferReader r)
     {
         var ev = new InitHudEvent();
         OnInitHUD(ev);
     }
 
-    protected virtual void ParseItemPickup(MessageReader r)
+    protected virtual void ParseItemPickup(ref BufferReader r)
     {
         var ev = new ItemPickupEvent(r.ReadString());
         OnItemPickup(ev);
     }
 
-    protected virtual void ParseScreenFade(MessageReader r)
+    protected virtual void ParseScreenFade(ref BufferReader r)
     {
-        var ev = new ScreenFadeEvent(ReadShort(r), ReadShort(r), ReadShort(r), r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte());
+        var ev = new ScreenFadeEvent(r.ReadInt16(), r.ReadInt16(), r.ReadInt16(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8());
         OnScreenFade(ev);
     }
 
-    protected virtual void ParseScreenShake(MessageReader r)
+    protected virtual void ParseScreenShake(ref BufferReader r)
     {
-        var ev = new ScreenShakeEvent(ReadShort(r), ReadShort(r), ReadShort(r));
+        var ev = new ScreenShakeEvent(r.ReadInt16(), r.ReadInt16(), r.ReadInt16());
         OnScreenShake(ev);
     }
 
-    protected virtual void ParseSetFOV(MessageReader r)
+    protected virtual void ParseSetFOV(ref BufferReader r)
     {
-        var ev = new SetFovEvent(r.ReadByte());
+        var ev = new SetFovEvent(r.ReadUInt8());
         OnSetFOV(ev);
     }
 
-    protected virtual void ParseStatusIcon(MessageReader r)
+    protected virtual void ParseStatusIcon(ref BufferReader r)
     {
-        var ev = new StatusIconEvent(r.ReadByte(), r.ReadString(), r.ReadByte(), r.ReadByte(), r.ReadByte());
+        var ev = new StatusIconEvent(r.ReadUInt8(), r.ReadString(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8());
         OnStatusIcon(ev);
     }
 
-    protected virtual void ParseTeamInfo(MessageReader r)
+    protected virtual void ParseTeamInfo(ref BufferReader r)
     {
-        var ev = new TeamInfoEvent(r.ReadByte(), r.ReadString());
+        var ev = new TeamInfoEvent(r.ReadUInt8(), r.ReadString());
         OnTeamInfo(ev);
     }
 
-    protected virtual void ParseTextMsg(MessageReader r)
+    protected virtual void ParseTextMsg(ref BufferReader r)
     {
-        var ev = new TextMsgEvent(r.ReadByte(), r.ReadString());
+        var ev = new TextMsgEvent(r.ReadUInt8(), r.ReadString());
         OnTextMsg(ev);
     }
 
-    protected virtual void ParseWeaponList(MessageReader r)
+    protected virtual void ParseWeaponList(ref BufferReader r)
     {
-        var ev = new WeaponListEvent(r.ReadString(), r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte());
+        var ev = new WeaponListEvent(r.ReadString(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8());
         OnWeaponList(ev);
     }
 
-    protected virtual void ParseWeapPickup(MessageReader r)
+    protected virtual void ParseWeapPickup(ref BufferReader r)
     {
         var ev = new WeapPickupEvent(r.ReadString());
         OnWeapPickup(ev);
     }
 
-    protected virtual void ParseSayText(MessageReader r)
+    protected virtual void ParseSayText(ref BufferReader r)
     {
-        var ev = new SayTextEvent(r.ReadByte(), r.ReadString());
+        var ev = new SayTextEvent(r.ReadUInt8(), r.ReadString());
         OnSayText(ev);
     }
 
-    protected virtual void ParseTrain(MessageReader r)
+    protected virtual void ParseTrain(ref BufferReader r)
     {
-        var ev = new TrainEvent(r.ReadByte());
+        var ev = new TrainEvent(r.ReadUInt8());
         OnTrain(ev);
     }
 
-    protected virtual void ParseVguiMenu(MessageReader r)
+    protected virtual void ParseVguiMenu(ref BufferReader r)
     {
-        var ev = new VguiMenuEvent(r.ReadByte(), r.ReadStringLine());
+        var ev = new VguiMenuEvent(r.ReadUInt8(), r.ReadStringLine());
         OnVguiMenu(ev);
     }
 
-    protected virtual void ParseResetHUD(MessageReader r)
+    protected virtual void ParseResetHUD(ref BufferReader r)
     {
         var ev = new ResetHudEvent();
         OnResetHUD(ev);
     }
 
-    protected virtual void ParseConcuss(MessageReader r)
+    protected virtual void ParseConcuss(ref BufferReader r)
     {
-        var ev = new ConcussEvent(r.ReadByte());
+        var ev = new ConcussEvent(r.ReadUInt8());
         OnConcuss(ev);
     }
 
-    protected virtual void ParseHudColor(MessageReader r)
+    protected virtual void ParseHudColor(ref BufferReader r)
     {
-        var ev = new HudColorEvent(r.ReadByte(), r.ReadByte(), r.ReadByte());
+        var ev = new HudColorEvent(r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8());
         OnHudColor(ev);
     }
 
     /// <summary>Fog: byte R, G, B, Density (Counter-Strike and Sven Co-op send this;
     /// stock Half-Life servers never do, so the case is inert there).</summary>
-    protected virtual void ParseFog(MessageReader r)
+    protected virtual void ParseFog(ref BufferReader r)
     {
-        var ev = new FogEvent(r.ReadByte(), r.ReadByte(), r.ReadByte(), r.ReadByte());
+        var ev = new FogEvent(r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8(), r.ReadUInt8());
         Fog?.Invoke(ev);
     }
 }

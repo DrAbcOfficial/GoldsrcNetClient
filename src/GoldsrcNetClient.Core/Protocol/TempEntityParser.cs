@@ -1,4 +1,4 @@
-using GoldsrcNetClient.Core.Util;
+using GoldsrcNetClient.Core.Io;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -12,6 +12,7 @@ namespace GoldsrcNetClient.Core.Protocol;
 /// CL_ParseTempEntity (Xash3D cl_tent.c / cl_efx.c CL_ParseViewBeam, protocol-48
 /// GoldSrc branch: no length prefix, the type byte is read directly from the
 /// stream, MSG_ReadCoord is a bit coordinate and MSG_ReadAngle an 8-bit angle).
+/// Reads past the end of the buffer throw <see cref="EndOfBufferException"/>.
 /// </summary>
 public static class TempEntityParser
 {
@@ -79,77 +80,68 @@ public static class TempEntityParser
     private const uint TeUserTracer = 127;
 
     /// <summary>
-    /// Skips one temp-entity effect starting at <paramref name="bitIdx"/> (which
-    /// must point at the type byte). Returns false when the stream is exhausted
-    /// or the type is unknown — in both cases the enclosing packet cannot be
-    /// reliably parsed further.
+    /// Skips one temp-entity effect starting at the reader's bit position (which
+    /// must point at the type byte). Returns false when the effect type is
+    /// unknown — its length is indeterminate, so the enclosing packet cannot be
+    /// reliably parsed further. Underflow throws instead.
     /// </summary>
+    /// <param name="reader">Reader positioned at the effect type byte; advanced past the effect.</param>
     /// <param name="variant">Engine-branch dialect (selects the coordinate encoding).</param>
-    public static bool Skip(byte[] data, ref int bitIdx, int size, IEngineVariant variant, ILogger? logger = null)
+    public static bool Skip(ref BufferReader reader, IEngineVariant variant)
     {
-        logger ??= NullLogger.Instance;
-        CoordReader read = variant.WideCoordinates ? ReadCoordWideInner : ReadCoordPacked;
-        uint type = 0;
-        if (!BitReader.ReadBits(data, ref bitIdx, size, ref type, 8))
-            return false;
+        bool wide = variant.WideCoordinates;
+        uint type = reader.ReadBits(8);
 
         switch (type)
         {
             // Beams: start/end as points or entity refs, then model + 9 parameter bytes.
             case TeBeamPoints:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false;
-                return SkipBytes(data, ref bitIdx, size, 9); // startFrame, frameRate, life, width, noise, r, g, b, speed
-            }
+                SkipCoords(ref reader, wide, 6);
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 9); // startFrame, frameRate, life, width, noise, r, g, b, speed
+                return true;
             case TeBeamEntPoint:
-            {
-                if (!ReadShort(data, ref bitIdx, size)) return false; // startEnt
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false; // end
-                if (!ReadShort(data, ref bitIdx, size)) return false;
-                return SkipBytes(data, ref bitIdx, size, 9);
-            }
+                reader.ReadBits(16); // startEnt
+                SkipCoords(ref reader, wide, 3); // end
+                reader.ReadBits(16);
+                SkipBytes(ref reader, 9);
+                return true;
             case TeBeamEnts:
-            {
-                if (!SkipShorts(data, ref bitIdx, size, 2)) return false; // startEnt, endEnt
-                if (!ReadShort(data, ref bitIdx, size)) return false;
-                return SkipBytes(data, ref bitIdx, size, 9);
-            }
+                SkipShorts(ref reader, 2); // startEnt, endEnt
+                reader.ReadBits(16);
+                SkipBytes(ref reader, 9);
+                return true;
             case TeLightning:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false;
-                return SkipBytes(data, ref bitIdx, size, 3); // life, width, noise
-            }
+                SkipCoords(ref reader, wide, 6);
+                reader.ReadBits(16);
+                SkipBytes(ref reader, 3); // life, width, noise
+                return true;
             case TeBeamTorus:
             case TeBeamDisk:
             case TeBeamCylinder:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false;
-                return SkipBytes(data, ref bitIdx, size, 8); // startFrame, frameRate, life, width, noise, r, g, b
-            }
+                SkipCoords(ref reader, wide, 6);
+                reader.ReadBits(16);
+                SkipBytes(ref reader, 8); // startFrame, frameRate, life, width, noise, r, g, b
+                return true;
             case TeBeamFollow:
-            {
-                if (!SkipShorts(data, ref bitIdx, size, 2)) return false; // startEnt, modelIndex
-                return SkipBytes(data, ref bitIdx, size, 6); // life, width, r, g, b, a
-            }
+                SkipShorts(ref reader, 2); // startEnt, modelIndex
+                SkipBytes(ref reader, 6); // life, width, r, g, b, a
+                return true;
             case TeBeamRing:
-            {
-                if (!SkipShorts(data, ref bitIdx, size, 2)) return false; // startEnt, endEnt
-                if (!ReadShort(data, ref bitIdx, size)) return false;
-                return SkipBytes(data, ref bitIdx, size, 9);
-            }
+                SkipShorts(ref reader, 2); // startEnt, endEnt
+                reader.ReadBits(16);
+                SkipBytes(ref reader, 9);
+                return true;
             case TeBeamSprite:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                return SkipShorts(data, ref bitIdx, size, 2); // beam model, sprite model
-            }
+                SkipCoords(ref reader, wide, 6);
+                SkipShorts(ref reader, 2); // beam model, sprite model
+                return true;
             case TeBeam:
             case TeBeamHose:
                 return true; // obsolete, no payload
             case TeKillBeam:
-                return ReadShort(data, ref bitIdx, size);
+                reader.ReadBits(16);
+                return true;
 
             // Simple point effects.
             case TeGunshot:
@@ -159,276 +151,223 @@ public static class TempEntityParser
             case TeTeleport:
             case TeShowLine:
             case TeArmorRicochet:
-                return SkipCoords(read, data, ref bitIdx, size, 3);
+                SkipCoords(ref reader, wide, 3);
+                return true;
             case TeExplosion:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return SkipBytes(data, ref bitIdx, size, 3); // scale, frameRate, flags
-            }
+                SkipCoords(ref reader, wide, 3);
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 3); // scale, frameRate, flags
+                return true;
             case TeSmoke:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return SkipBytes(data, ref bitIdx, size, 2); // scale, frameRate
-            }
+                SkipCoords(ref reader, wide, 3);
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 2); // scale, frameRate
+                return true;
             case TeTracer:
-                return SkipCoords(read, data, ref bitIdx, size, 6);
+                SkipCoords(ref reader, wide, 6);
+                return true;
             case TeExplosion2:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                return SkipBytes(data, ref bitIdx, size, 2); // color, count
-            }
+                SkipCoords(ref reader, wide, 3);
+                SkipBytes(ref reader, 2); // color, count
+                return true;
             case TeImplosion:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                return SkipBytes(data, ref bitIdx, size, 3); // scale, count, life
-            }
+                SkipCoords(ref reader, wide, 3);
+                SkipBytes(ref reader, 3); // scale, count, life
+                return true;
             case TeSpriteTrail:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return SkipBytes(data, ref bitIdx, size, 5); // count, life, scale, velocity, random
-            }
+                SkipCoords(ref reader, wide, 6);
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 5); // count, life, scale, velocity, random
+                return true;
             case TeSprite:
             case TeGlowSprite:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return SkipBytes(data, ref bitIdx, size, 2); // scale, brightness/life
-            }
+                SkipCoords(ref reader, wide, 3);
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 2); // scale, brightness/life
+                return true;
             case TeStreakSplash:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!SkipBytes(data, ref bitIdx, size, 1)) return false; // color
-                if (!ReadShort(data, ref bitIdx, size)) return false; // count
-                return SkipShorts(data, ref bitIdx, size, 2); // velocity, random
-            }
+                SkipCoords(ref reader, wide, 6);
+                SkipBytes(ref reader, 1); // color
+                reader.ReadBits(16); // count
+                SkipShorts(ref reader, 2); // velocity, random
+                return true;
             case TeDLight:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                return SkipBytes(data, ref bitIdx, size, 6); // radius, r, g, b, life, decay
-            }
+                SkipCoords(ref reader, wide, 3);
+                SkipBytes(ref reader, 6); // radius, r, g, b, life, decay
+                return true;
             case TeELight:
-            {
-                if (!ReadShort(data, ref bitIdx, size)) return false; // entity
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false; // origin
-                if (!read(data, ref bitIdx, size)) return false; // radius
-                if (!SkipBytes(data, ref bitIdx, size, 4)) return false; // r, g, b, life
-                return read(data, ref bitIdx, size); // decay
-            }
+                reader.ReadBits(16); // entity
+                SkipCoords(ref reader, wide, 3); // origin
+                ReadCoord(ref reader, wide); // radius
+                SkipBytes(ref reader, 4); // r, g, b, life
+                ReadCoord(ref reader, wide); // decay
+                return true;
             case TeTextMessage:
-                return SkipTextMessage(data, ref bitIdx, size);
+                SkipTextMessage(ref reader);
+                return true;
             case TeLine:
             case TeBox:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // life
-                return SkipBytes(data, ref bitIdx, size, 3); // r, g, b
-            }
+                SkipCoords(ref reader, wide, 6);
+                reader.ReadBits(16); // life
+                SkipBytes(ref reader, 3); // r, g, b
+                return true;
 
             // Decals.
             case TeBspDecal:
             {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // decalIndex
-                uint entityIndex = 0;
-                if (!BitReader.ReadBits(data, ref bitIdx, size, ref entityIndex, 16)) return false;
+                SkipCoords(ref reader, wide, 3);
+                reader.ReadBits(16); // decalIndex
+                uint entityIndex = reader.ReadBits(16);
                 // modelIndex only follows when the decal is shot onto a brush
                 // entity (wire-verified: world decals end the message here).
-                return entityIndex == 0 || ReadShort(data, ref bitIdx, size);
+                if (entityIndex != 0)
+                    reader.ReadBits(16);
+                return true;
             }
             case TeDecal:
             case TeDecalHigh:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!SkipBytes(data, ref bitIdx, size, 1)) return false; // decalIndex
-                return ReadShort(data, ref bitIdx, size); // entityIndex
-            }
+                SkipCoords(ref reader, wide, 3);
+                SkipBytes(ref reader, 1); // decalIndex
+                reader.ReadBits(16); // entityIndex
+                return true;
             case TeWorldDecal:
             case TeWorldDecalHigh:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                return SkipBytes(data, ref bitIdx, size, 1); // decalIndex
-            }
+                SkipCoords(ref reader, wide, 3);
+                SkipBytes(ref reader, 1); // decalIndex
+                return true;
 
             // Entity/model effects.
             case TeLargeFunnel:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                return SkipShorts(data, ref bitIdx, size, 2); // modelIndex, flags
-            }
+                SkipCoords(ref reader, wide, 3);
+                SkipShorts(ref reader, 2); // modelIndex, flags
+                return true;
             case TeBloodStream:
             case TeBlood:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                return SkipBytes(data, ref bitIdx, size, 2); // color, count
-            }
+                SkipCoords(ref reader, wide, 6);
+                SkipBytes(ref reader, 2); // color, count
+                return true;
             case TeFizz:
-            {
-                if (!SkipShorts(data, ref bitIdx, size, 2)) return false; // entity, model
-                return SkipBytes(data, ref bitIdx, size, 1); // density
-            }
+                SkipShorts(ref reader, 2); // entity, model
+                SkipBytes(ref reader, 1); // density
+                return true;
             case TeModel:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!ReadAngle8(data, ref bitIdx, size)) return false; // yaw
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return SkipBytes(data, ref bitIdx, size, 2); // sound flags, life
-            }
+                SkipCoords(ref reader, wide, 6);
+                reader.ReadBitAngle(8); // yaw
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 2); // sound flags, life
+                return true;
             case TeExplodeModel:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!read(data, ref bitIdx, size)) return false; // velocity
-                if (!SkipShorts(data, ref bitIdx, size, 2)) return false; // modelIndex, count
-                return SkipBytes(data, ref bitIdx, size, 1); // life
-            }
+                SkipCoords(ref reader, wide, 3);
+                ReadCoord(ref reader, wide); // velocity
+                SkipShorts(ref reader, 2); // modelIndex, count
+                SkipBytes(ref reader, 1); // life
+                return true;
             case TeBreakModel:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 9)) return false; // mins, maxs, angles
-                if (!SkipBytes(data, ref bitIdx, size, 1)) return false; // random
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return SkipBytes(data, ref bitIdx, size, 3); // count, life, flags
-            }
+                SkipCoords(ref reader, wide, 9); // mins, maxs, angles
+                SkipBytes(ref reader, 1); // random
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 3); // count, life, flags
+                return true;
             case TeGunshotDecal:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // entityIndex
-                return SkipBytes(data, ref bitIdx, size, 1); // decalIndex
-            }
+                SkipCoords(ref reader, wide, 3);
+                reader.ReadBits(16); // entityIndex
+                SkipBytes(ref reader, 1); // decalIndex
+                return true;
             case TeSpriteSpray:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return SkipBytes(data, ref bitIdx, size, 3); // count, velocity, random
-            }
+                SkipCoords(ref reader, wide, 6);
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 3); // count, velocity, random
+                return true;
             case TePlayerDecal:
-            {
-                if (!SkipBytes(data, ref bitIdx, size, 1)) return false; // playernum
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // entityIndex
-                return SkipBytes(data, ref bitIdx, size, 1); // decalIndex
-            }
+                SkipBytes(ref reader, 1); // playernum
+                SkipCoords(ref reader, wide, 3);
+                reader.ReadBits(16); // entityIndex
+                SkipBytes(ref reader, 1); // decalIndex
+                return true;
             case TeBubbles:
             case TeBubbleTrail:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!read(data, ref bitIdx, size)) return false; // water height
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                if (!SkipBytes(data, ref bitIdx, size, 1)) return false; // count
-                return read(data, ref bitIdx, size); // velocity
-            }
+                SkipCoords(ref reader, wide, 6);
+                ReadCoord(ref reader, wide); // water height
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 1); // count
+                ReadCoord(ref reader, wide); // velocity
+                return true;
             case TeBloodSprite:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!SkipShorts(data, ref bitIdx, size, 2)) return false; // sprite1, sprite2
-                return SkipBytes(data, ref bitIdx, size, 2); // color, scale
-            }
+                SkipCoords(ref reader, wide, 3);
+                SkipShorts(ref reader, 2); // sprite1, sprite2
+                SkipBytes(ref reader, 2); // color, scale
+                return true;
             case TeProjectile:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return SkipBytes(data, ref bitIdx, size, 2); // life, playernum
-            }
+                SkipCoords(ref reader, wide, 6);
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 2); // life, playernum
+                return true;
             case TeSpray:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return SkipBytes(data, ref bitIdx, size, 4); // count, velocity, random, rendermode
-            }
+                SkipCoords(ref reader, wide, 6);
+                reader.ReadBits(16); // modelIndex
+                SkipBytes(ref reader, 4); // count, velocity, random, rendermode
+                return true;
             case TePlayerSprites:
-            {
-                if (!SkipShorts(data, ref bitIdx, size, 2)) return false; // entity, modelIndex
-                return SkipBytes(data, ref bitIdx, size, 2); // count, random
-            }
+                SkipShorts(ref reader, 2); // entity, modelIndex
+                SkipBytes(ref reader, 2); // count, random
+                return true;
             case TeParticleBurst:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!ReadShort(data, ref bitIdx, size)) return false; // radius
-                return SkipBytes(data, ref bitIdx, size, 2); // color, life
-            }
+                SkipCoords(ref reader, wide, 3);
+                reader.ReadBits(16); // radius
+                SkipBytes(ref reader, 2); // color, life
+                return true;
             case TeFireField:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 3)) return false;
-                if (!SkipShorts(data, ref bitIdx, size, 2)) return false; // radius, modelIndex
-                return SkipBytes(data, ref bitIdx, size, 3); // count, flags, life
-            }
+                SkipCoords(ref reader, wide, 3);
+                SkipShorts(ref reader, 2); // radius, modelIndex
+                SkipBytes(ref reader, 3); // count, flags, life
+                return true;
             case TePlayerAttachment:
-            {
-                if (!SkipBytes(data, ref bitIdx, size, 1)) return false; // playernum
-                if (!read(data, ref bitIdx, size)) return false; // height
-                if (!ReadShort(data, ref bitIdx, size)) return false; // modelIndex
-                return ReadShort(data, ref bitIdx, size); // life
-            }
+                SkipBytes(ref reader, 1); // playernum
+                ReadCoord(ref reader, wide); // height
+                reader.ReadBits(16); // modelIndex
+                reader.ReadBits(16); // life
+                return true;
             case TeKillPlayerAttachments:
-                return SkipBytes(data, ref bitIdx, size, 1); // playernum
+                SkipBytes(ref reader, 1); // playernum
+                return true;
             case TeMultiGunshot:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 8)) return false; // origin, direction(×0.1), angles(×0.01)
-                return SkipBytes(data, ref bitIdx, size, 2); // count, decalIndex
-            }
+                SkipCoords(ref reader, wide, 8); // origin, direction(×0.1), angles(×0.01)
+                SkipBytes(ref reader, 2); // count, decalIndex
+                return true;
             case TeUserTracer:
-            {
-                if (!SkipCoords(read, data, ref bitIdx, size, 6)) return false;
-                return SkipBytes(data, ref bitIdx, size, 3); // life, color, scale
-            }
+                SkipCoords(ref reader, wide, 6);
+                SkipBytes(ref reader, 3); // life, color, scale
+                return true;
             default:
                 // Unknown types have an indeterminate length; the packet cannot stay in sync.
                 return false;
         }
     }
 
-    private delegate bool CoordReader(byte[] data, ref int bitIdx, int size);
-
-    private static bool ReadCoordPacked(byte[] data, ref int bitIdx, int size)
+    private static void ReadCoord(ref BufferReader reader, bool wide)
     {
-        float v = 0;
-        return BitReader.ReadBitCoord(data, ref bitIdx, size, ref v);
+        if (wide)
+            reader.ReadBitCoordWide();
+        else
+            reader.ReadBitCoord();
     }
 
-    private static bool ReadCoordWideInner(byte[] data, ref int bitIdx, int size)
-    {
-        float v = 0;
-        return BitReader.ReadCoordWide(data, ref bitIdx, size, ref v);
-    }
-
-    private static bool ReadAngle8(byte[] data, ref int bitIdx, int size)
-    {
-        float v = 0;
-        return BitReader.ReadBitAngle(data, ref bitIdx, size, ref v, 8);
-    }
-
-    private static bool SkipCoords(CoordReader read, byte[] data, ref int bitIdx, int size, int count)
+    private static void SkipCoords(ref BufferReader reader, bool wide, int count)
     {
         for (int i = 0; i < count; i++)
-            if (!read(data, ref bitIdx, size))
-                return false;
-        return true;
+            ReadCoord(ref reader, wide);
     }
 
-    private static bool SkipShorts(byte[] data, ref int bitIdx, int size, int count)
+    private static void SkipShorts(ref BufferReader reader, int count)
     {
         for (int i = 0; i < count; i++)
-            if (!ReadShort(data, ref bitIdx, size))
-                return false;
-        return true;
+            reader.ReadBits(16);
     }
 
-    private static bool ReadShort(byte[] data, ref int bitIdx, int size)
-    {
-        uint v = 0;
-        return BitReader.ReadBits(data, ref bitIdx, size, ref v, 16);
-    }
-
-    private static bool SkipBytes(byte[] data, ref int bitIdx, int size, int count)
+    private static void SkipBytes(ref BufferReader reader, int count)
     {
         for (int i = 0; i < count; i++)
-        {
-            uint v = 0;
-            if (!BitReader.ReadBits(data, ref bitIdx, size, ref v, 8))
-                return false;
-        }
-        return true;
+            reader.ReadBits(8);
     }
 
     /// <summary>
@@ -437,17 +376,17 @@ public static class TempEntityParser
     /// holdtime (16-bit fixed /256), fxtime (only when effect == 2), and the
     /// null-terminated message string.
     /// </summary>
-    private static bool SkipTextMessage(byte[] data, ref int bitIdx, int size)
+    private static void SkipTextMessage(ref BufferReader reader)
     {
-        if (!SkipBytes(data, ref bitIdx, size, 1)) return false;  // channel
-        if (!SkipShorts(data, ref bitIdx, size, 2)) return false; // x, y
+        SkipBytes(ref reader, 1);  // channel
+        SkipShorts(ref reader, 2); // x, y
 
-        uint effect = 0;
-        if (!BitReader.ReadBits(data, ref bitIdx, size, ref effect, 8)) return false;
+        uint effect = reader.ReadBits(8);
 
-        if (!SkipBytes(data, ref bitIdx, size, 8)) return false;  // r1,g1,b1,a1, r2,g2,b2,a2
-        if (!SkipShorts(data, ref bitIdx, size, 3)) return false; // fadein, fadeout, holdtime
-        if (effect == 2 && !SkipShorts(data, ref bitIdx, size, 1)) return false; // fxtime
-        return BitReader.ReadBitString(data, ref bitIdx, size, out _); // message
+        SkipBytes(ref reader, 8);  // r1,g1,b1,a1, r2,g2,b2,a2
+        SkipShorts(ref reader, 3); // fadein, fadeout, holdtime
+        if (effect == 2)
+            SkipShorts(ref reader, 1); // fxtime
+        reader.ReadBitString(); // message
     }
 }

@@ -1,6 +1,6 @@
 using GoldsrcNetClient.Core.Delta;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Protocol;
-using GoldsrcNetClient.Core.Util;
 
 namespace GoldsrcNetClient.Test;
 
@@ -114,27 +114,15 @@ public class DeltaDescriptionWireTests
         var buf = new BitBuffer();
         DeltaWire.WriteDescription(buf, "clientdata_t", ClientDataHead, byteCountBits: 4);
 
-        int bitIdx = 0;
-        var data = buf.Data;
+        var reader = new BufferReader(buf.Data);
+        Assert.Equal("clientdata_t", reader.ReadString());
 
-        uint nameLen = 0;
-        // name string is byte-aligned here because nothing was written before it
-        Assert.True(BitReader.ReadBits(data, ref bitIdx, buf.Data.Length, ref nameLen, 8)); // placeholder advance guard
-
-        // Instead of re-reading the name manually, jump past it: the reader API
-        // starts after the name, so emulate HandleDeltaDescription's flow.
-        bitIdx = 0;
-        byte[] nameBytes = ReadNullTerminated(data, ref bitIdx);
-        Assert.Equal("clientdata_t", System.Text.Encoding.ASCII.GetString(nameBytes));
-
-        uint fieldCount = 0;
-        Assert.True(BitReader.ReadBits(data, ref bitIdx, buf.Data.Length, ref fieldCount, 16));
+        uint fieldCount = reader.ReadBits(16);
         Assert.Equal((uint)ClientDataHead.Length, fieldCount);
 
         for (int i = 0; i < ClientDataHead.Length; i++)
         {
-            Assert.True(DeltaReader.TryReadFieldDescription(data, buf.Data.Length, ref bitIdx, byteCountBits: 4,
-                out var desc));
+            var desc = DeltaReader.ReadFieldDescription(ref reader, byteCountBits: 4);
             Assert.Equal(ClientDataHead[i].FieldName, desc.FieldName);
             Assert.Equal(ClientDataHead[i].FieldType, desc.FieldType);
             Assert.Equal(ClientDataHead[i].FieldOffset, desc.FieldOffset);
@@ -147,7 +135,7 @@ public class DeltaDescriptionWireTests
             Assert.Equal((byte)ClientDataHead[i].SignificantBits, field.Bits);
         }
 
-        Assert.Equal(buf.BitLength, bitIdx);
+        Assert.Equal(buf.BitLength, reader.BitPosition);
     }
 
     [Fact]
@@ -157,12 +145,10 @@ public class DeltaDescriptionWireTests
         // subsequent field. Verify the Valve width still decodes Valve content.
         var buf = new BitBuffer();
         DeltaWire.WriteDescription(buf, "event_t", ClientDataHead, byteCountBits: 3);
-        int bitIdx = 0;
-        ReadNullTerminated(buf.Data, ref bitIdx);
-        uint fieldCount = 0;
-        Assert.True(BitReader.ReadBits(buf.Data, ref bitIdx, buf.Data.Length, ref fieldCount, 16));
-        Assert.True(DeltaReader.TryReadFieldDescription(buf.Data, buf.Data.Length, ref bitIdx, byteCountBits: 3,
-            out var desc));
+        var reader = new BufferReader(buf.Data);
+        reader.ReadString();
+        uint fieldCount = reader.ReadBits(16);
+        var desc = DeltaReader.ReadFieldDescription(ref reader, byteCountBits: 3);
         Assert.Equal("flTimeStepSound", desc.FieldName);
     }
 
@@ -182,9 +168,9 @@ public class DeltaDescriptionWireTests
         buf.WriteBits(0b10, 8);       // bit 1 marked (origin[0]), bit 0 clear
         buf.WriteBits(123456, 24);    // origin[0] payload
 
-        int bitIdx = 0;
-        Assert.True(DeltaReader.ReadFields(dynamic, buf.Data, buf.Data.Length, ref bitIdx, byteCountBits: 4));
-        Assert.Equal(buf.BitLength, bitIdx);
+        var reader = new BufferReader(buf.Data);
+        DeltaReader.ReadFields(dynamic, ref reader, byteCountBits: 4);
+        Assert.Equal(buf.BitLength, reader.BitPosition);
     }
 
     [Fact]
@@ -201,21 +187,8 @@ public class DeltaDescriptionWireTests
         buf.WriteBits(0b10, 8);
         buf.WriteBits(123456, 24);
 
-        int bitIdx = 0;
-        Assert.True(DeltaReader.ReadFields(dynamic, buf.Data, buf.Data.Length, ref bitIdx, byteCountBits: 3));
-        Assert.Equal(buf.BitLength, bitIdx);
-    }
-
-    private static byte[] ReadNullTerminated(byte[] data, ref int bitIdx)
-    {
-        var bytes = new List<byte>();
-        while (true)
-        {
-            uint b = 0;
-            Assert.True(BitReader.ReadBits(data, ref bitIdx, data.Length, ref b, 8));
-            if (b == 0) break;
-            bytes.Add((byte)b);
-        }
-        return bytes.ToArray();
+        var reader = new BufferReader(buf.Data);
+        DeltaReader.ReadFields(dynamic, ref reader, byteCountBits: 3);
+        Assert.Equal(buf.BitLength, reader.BitPosition);
     }
 }

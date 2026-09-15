@@ -1,11 +1,11 @@
-namespace GoldsrcNetClient.Core.Util;
+namespace GoldsrcNetClient.Core.Io;
 
 /// <summary>
 /// Bounded hex previews for logging (C# 14 extension members): keeps debug
 /// dumps of large packets down to a fixed head without repeating the same
 /// slice-and-convert dance at every call site.
 /// </summary>
-public static class ByteSpanExtensions
+public static class HexExtensions
 {
     extension(ReadOnlySpan<byte> source)
     {

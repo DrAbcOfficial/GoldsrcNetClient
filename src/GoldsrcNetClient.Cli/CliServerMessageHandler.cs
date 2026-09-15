@@ -1,4 +1,5 @@
 using CliFx.Infrastructure;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
@@ -16,7 +17,7 @@ namespace GoldsrcNetClient.Cli;
 public sealed class CliServerMessageHandler(IConsole console, bool debug) : IServerMessageHandler
 {
     /// <inheritdoc />
-    public bool HandleMessage(GoldsrcConnection connection, byte messageType, MessageReader reader)
+    public bool HandleMessage(GoldsrcConnection connection, byte messageType, ref BufferReader reader)
     {
         if (!debug)
             return false;

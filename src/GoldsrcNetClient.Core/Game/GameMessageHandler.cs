@@ -1,3 +1,4 @@
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
@@ -46,11 +47,11 @@ public abstract class GameMessageHandler : IServerMessageHandler
     public event Action<RawUserMessage>? OnRawUserMessage;
 
     /// <inheritdoc />
-    public bool HandleMessage(GoldsrcConnection connection, byte messageType, MessageReader reader)
+    public bool HandleMessage(GoldsrcConnection connection, byte messageType, ref BufferReader reader)
     {
         if (messageType == (byte)ServerMessageType.NewUserMsg)
         {
-            Registry.Register(reader);
+            Registry.Register(ref reader);
             return true;
         }
 
@@ -61,7 +62,7 @@ public abstract class GameMessageHandler : IServerMessageHandler
             if (Registry.TryGetSize(messageType, out var fixedSize))
             {
                 // Fixed-size registration: the payload directly follows the index byte.
-                DispatchUserMessageRange(connection, messageType, name, reader, fixedSize, out var handled);
+                DispatchUserMessageRange(connection, messageType, name, ref reader, fixedSize, out var handled);
                 if (!handled)
                     LogUnknownUserMessage(connection, messageType, name);
                 return true;
@@ -80,18 +81,16 @@ public abstract class GameMessageHandler : IServerMessageHandler
                 // ServerName 7A 16 00 "Sven Co-op 5.0 server\0" — 0x0016 = 22).
                 // Unregistered indices use the same framing as a best effort so
                 // the surrounding stream stays in sync.
-                uint lo = reader.Offset < reader.Size ? reader.Data[reader.Offset++] : 0u;
-                uint hi = reader.Offset < reader.Size ? reader.Data[reader.Offset++] : 0u;
-                payloadLen = (int)(lo | (hi << 8));
+                payloadLen = reader.ReadUInt16();
             }
 
-            DispatchUserMessageRange(connection, messageType, name, reader, payloadLen, out var handledVariable);
+            DispatchUserMessageRange(connection, messageType, name, ref reader, payloadLen, out var handledVariable);
             if (!handledVariable)
                 LogUnknownUserMessage(connection, messageType, name);
             return true;
         }
 
-        if (Next != null && Next.HandleMessage(connection, messageType, reader))
+        if (Next != null && Next.HandleMessage(connection, messageType, ref reader))
             return true;
 
         return false;
@@ -101,27 +100,35 @@ public abstract class GameMessageHandler : IServerMessageHandler
     /// Dispatches the next <paramref name="payloadLen"/> bytes of the stream as one
     /// user message over a bounded reader, then consumes exactly those bytes. The
     /// bounded view guarantees a mis-parsing handler can never desynchronise the
-    /// surrounding message stream.
+    /// surrounding message stream — a read past the slice's end is caught here and
+    /// the outer reader still advances to the payload boundary.
     /// </summary>
     private void DispatchUserMessageRange(
         GoldsrcConnection connection,
         byte index,
         string? name,
-        MessageReader reader,
+        ref BufferReader reader,
         int payloadLen,
         out bool handled)
     {
-        int payloadEnd = Math.Min(reader.Offset + payloadLen, reader.Size);
-        var bounded = new MessageReader(reader.Data[reader.Offset..payloadEnd]);
+        int take = Math.Min(payloadLen, reader.Remaining);
+        var bounded = reader.Slice(take);
 
-        handled = name != null && DispatchUserMessage(connection, index, name, bounded);
-        if (!handled)
+        handled = false;
+        try
         {
-            var raw = new RawUserMessage(index, name ?? "unknown", bounded.Data[bounded.Offset..bounded.Size].ToArray());
-            OnRawUserMessage?.Invoke(raw);
+            handled = name != null && DispatchUserMessage(connection, index, name, ref bounded);
+        }
+        catch (Exception ex) when (ex is EndOfBufferException or InvalidDataException)
+        {
+            connection.Logger.LogWarning("[UserMsg] {Name} (0x{Index:X2}) truncated: {Message}", name, index, ex.Message);
         }
 
-        reader.Offset = payloadEnd;
+        if (!handled)
+        {
+            var raw = new RawUserMessage(index, name ?? "unknown", bounded.RemainingSpan.ToArray());
+            OnRawUserMessage?.Invoke(raw);
+        }
     }
 
     private static void LogUnknownUserMessage(GoldsrcConnection connection, byte index, string? name)
@@ -134,30 +141,7 @@ public abstract class GameMessageHandler : IServerMessageHandler
     /// The base implementation returns <c>false</c> for all messages.
     /// </summary>
     /// <returns><c>true</c> if the message was consumed; <c>false</c> to raise <see cref="OnRawUserMessage"/>.</returns>
-    protected virtual bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, MessageReader reader) => false;
-
-    /// <summary>Reads a GoldSrc coordinate (16-bit signed fixed-point /8).</summary>
-    protected static float ReadCoord(MessageReader reader)
-    {
-        if (reader.Remaining < 2) return 0f;
-        short raw = BitConverter.ToInt16(reader.Data, reader.Offset);
-        reader.Offset += 2;
-        return raw / 8.0f;
-    }
-
-    /// <summary>Reads a signed 16-bit integer from the reader (0 on overflow).</summary>
-    protected static short ReadShort(MessageReader reader)
-    {
-        reader.ReadInt16(out short value);
-        return value;
-    }
-
-    /// <summary>Reads a signed 32-bit integer from the reader (0 on overflow).</summary>
-    protected static int ReadInt32(MessageReader reader)
-    {
-        reader.ReadInt32(out int value);
-        return value;
-    }
+    protected virtual bool DispatchUserMessage(GoldsrcConnection connection, byte index, string name, ref BufferReader reader) => false;
 
     /// <summary>Resets the message registry. Call when establishing a new connection.</summary>
     public virtual void Reset() => Registry.Clear();

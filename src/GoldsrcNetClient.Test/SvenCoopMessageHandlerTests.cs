@@ -1,5 +1,5 @@
 using GoldsrcNetClient.Core.Game;
-using GoldsrcNetClient.Core.Messages;
+using GoldsrcNetClient.Core.Io;
 using GoldsrcNetClient.Core.Network;
 using System.Text;
 
@@ -22,14 +22,18 @@ public class SvenCoopMessageHandlerTests
 
     /// <summary>Registers <paramref name="name"/> at <paramref name="index"/> with a fixed
     /// payload size and returns a reader positioned at the message index byte.</summary>
-    private static (SvenCoopMessageHandler Handler, MessageReader Reader, GoldsrcConnection Connection) Setup(
-        byte index, string name, params byte[] payload)
+    private static (SvenCoopMessageHandler Handler, GoldsrcConnection Connection) Setup(
+        byte index, string name, out BufferReader reader, params byte[] payload)
     {
         var connection = new GoldsrcConnection();
         var handler = new SvenCoopMessageHandler();
-        handler.Registry.Register(new MessageReader(Registration(index, (byte)payload.Length, name)));
-        var reader = new MessageReader([index, .. payload]) { Offset = 1 };
-        return (handler, reader, connection);
+        var registration = new BufferReader(Registration(index, (byte)payload.Length, name));
+        handler.Registry.Register(ref registration);
+        var stream = new byte[payload.Length + 1];
+        stream[0] = index;
+        payload.CopyTo(stream, 1);
+        reader = new BufferReader(stream) { BytePosition = 1 };
+        return (handler, connection);
     }
 
     /// <summary>Wraps a 32-bit Sven coordinate (value × 8).</summary>
@@ -45,13 +49,13 @@ public class SvenCoopMessageHandlerTests
     public void CurWeapon_ParsesSvenWideFormat()
     {
         // byte active, short wid, long clip, long reserve
-        var (handler, reader, conn) = Setup(0x50, "CurWeapon",
+        var (handler, conn) = Setup(0x50, "CurWeapon", out var reader,
             0x01, 0x05, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x2C, 0x01, 0x00, 0x00);
         ScCurWeaponEvent? ev = null;
         handler.ScCurWeapon += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x50, reader));
-        Assert.Equal(12, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x50, ref reader));
+        Assert.Equal(12, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.Equal(1, ev!.Value.IsActive);
         Assert.Equal(5, ev.Value.WeaponId);
@@ -62,12 +66,12 @@ public class SvenCoopMessageHandlerTests
     [Fact]
     public void Health_Reads32BitValue()
     {
-        var (handler, reader, conn) = Setup(0x51, "Health", 0x64, 0x00, 0x00, 0x00);
+        var (handler, conn) = Setup(0x51, "Health", out var reader, 0x64, 0x00, 0x00, 0x00);
         ScHealthEvent? ev = null;
         handler.ScHealth += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x51, reader));
-        Assert.Equal(5, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x51, ref reader));
+        Assert.Equal(5, reader.BytePosition);
         Assert.Equal(100, ev!.Value.Health);
     }
 
@@ -86,11 +90,11 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange([0x0E, 0x00]);                         // weapon id 14
         payload.Add(0x00);                                      // flags
 
-        var (handler, reader, conn) = Setup(0x52, "WeaponList", payload.ToArray());
+        var (handler, conn) = Setup(0x52, "WeaponList", out var reader, payload.ToArray());
         ScWeaponListEvent? ev = null;
         handler.ScWeaponList += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x52, reader));
+        Assert.True(handler.HandleMessage(conn, 0x52, ref reader));
         Assert.NotNull(ev);
         Assert.Equal("weapon_crowbar", ev!.Value.WeaponName);
         Assert.Equal(2, ev.Value.PrimaryAmmoId);
@@ -109,11 +113,11 @@ public class SvenCoopMessageHandlerTests
         foreach (var s in new[] { "#GAMEOVER", "a", "b", "c", "d" })
             payload.AddRange(Encoding.UTF8.GetBytes(s).Append((byte)0));
 
-        var (handler, reader, conn) = Setup(0x53, "TextMsg", payload.ToArray());
+        var (handler, conn) = Setup(0x53, "TextMsg", out var reader, payload.ToArray());
         ScTextMsgEvent? ev = null;
         handler.ScTextMsg += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x53, reader));
+        Assert.True(handler.HandleMessage(conn, 0x53, ref reader));
         Assert.NotNull(ev);
         Assert.Equal(3, ev!.Value.MsgDest);
         Assert.Equal("#GAMEOVER", ev.Value.Message);
@@ -134,12 +138,12 @@ public class SvenCoopMessageHandlerTests
         payload.Add(0x05);                              // channel
         payload.AddRange([0x0B, 0x00]);                 // sound index 11
 
-        var (handler, reader, conn) = Setup(0x54, "StartSound", payload.ToArray());
+        var (handler, conn) = Setup(0x54, "StartSound", out var reader, payload.ToArray());
         ScStartSoundEvent? ev = null;
         handler.ScStartSound += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x54, reader));
-        Assert.Equal(1 + payload.Count, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x54, ref reader));
+        Assert.Equal(1 + payload.Count, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.Equal(0x0019, ev!.Value.Flags);
         Assert.Equal((short)7, ev.Value.Entity);
@@ -166,12 +170,12 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange([0x10, 0x00]);                 // value1 = 16
         payload.AddRange([0x20, 0x00]);                 // value2 = 32
 
-        var (handler, reader, conn) = Setup(0x55, "Fog", payload.ToArray());
+        var (handler, conn) = Setup(0x55, "Fog", out var reader, payload.ToArray());
         ScFogEvent? ev = null;
         handler.ScFog += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x55, reader));
-        Assert.Equal(1 + payload.Count, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x55, ref reader));
+        Assert.Equal(1 + payload.Count, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.True(ev!.Value.Enabled);
         Assert.Equal(1f, ev.Value.OriginX);
@@ -196,12 +200,12 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange([0x10, 0x00]);                 // flags: only 0x10 (red)
         payload.Add(0xFF);                              // red
 
-        var (handler, reader, conn) = Setup(0x56, "RampSprite", payload.ToArray());
+        var (handler, conn) = Setup(0x56, "RampSprite", out var reader, payload.ToArray());
         ScRampSpriteEvent? ev = null;
         handler.ScRampSprite += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x56, reader));
-        Assert.Equal(1 + payload.Count, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x56, ref reader));
+        Assert.Equal(1 + payload.Count, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.Equal(10, ev!.Value.Entity);
         Assert.Equal(5, ev.Value.LifeTicks);
@@ -218,14 +222,14 @@ public class SvenCoopMessageHandlerTests
     [Fact]
     public void PrtlUpdt_RemovedPathConsumesEntityAndFlagOnly()
     {
-        var (handler, reader, conn) = Setup(0x57, "PrtlUpdt",
+        var (handler, conn) = Setup(0x57, "PrtlUpdt", out var reader,
             0x03, 0x00, 0x00, 0x00,  // entity 3
             0x00);                   // enabled = 0 → remove
         ScPortalUpdateEvent? ev = null;
         handler.ScPortalUpdate += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x57, reader));
-        Assert.Equal(6, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x57, ref reader));
+        Assert.Equal(6, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.True(ev!.Value.Removed);
         Assert.Equal(3, ev.Value.Entity);
@@ -252,12 +256,12 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange([0x14, 0x00, 0x00, 0x00]);     // long4 = 20
         // style != 2 → no string
 
-        var (handler, reader, conn) = Setup(0x58, "PrtlUpdt", payload.ToArray());
+        var (handler, conn) = Setup(0x58, "PrtlUpdt", out var reader, payload.ToArray());
         ScPortalUpdateEvent? ev = null;
         handler.ScPortalUpdate += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x58, reader));
-        Assert.Equal(1 + payload.Count, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x58, ref reader));
+        Assert.Equal(1 + payload.Count, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.False(ev!.Value.Removed);
         Assert.Equal(5, ev.Value.Entity);
@@ -279,11 +283,11 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange(Encoding.UTF8.GetBytes("team2\0"));
         payload.AddRange(Coord(8)); payload.AddRange(Coord(16)); payload.AddRange(Coord(24));
 
-        var (handler, reader, conn) = Setup(0x59, "TeamNames", payload.ToArray());
+        var (handler, conn) = Setup(0x59, "TeamNames", out var reader, payload.ToArray());
         ScTeamNamesEvent? ev = null;
         handler.ScTeamNames += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x59, reader));
+        Assert.True(handler.HandleMessage(conn, 0x59, ref reader));
         Assert.NotNull(ev);
         Assert.Equal(2, ev!.Value.Teams.Length);
         Assert.Equal("team1", ev.Value.Teams[0].Name);
@@ -297,12 +301,12 @@ public class SvenCoopMessageHandlerTests
     [Fact]
     public void Gib_UnknownTypeCarriesNoCoordinates()
     {
-        var (handler, reader, conn) = Setup(0x5A, "Gib", 0x03);
+        var (handler, conn) = Setup(0x5A, "Gib", out var reader, 0x03);
         ScGibEvent? ev = null;
         handler.ScGib += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x5A, reader));
-        Assert.Equal(2, reader.Offset); // index + type byte only
+        Assert.True(handler.HandleMessage(conn, 0x5A, ref reader));
+        Assert.Equal(2, reader.BytePosition); // index + type byte only
         Assert.NotNull(ev);
         Assert.Equal(3, ev!.Value.Type);
         Assert.Equal(0f, ev.Value.OriginX);
@@ -311,12 +315,12 @@ public class SvenCoopMessageHandlerTests
     [Fact]
     public void ToggleElem_RaisesChannelAndState()
     {
-        var (handler, reader, conn) = Setup(0x5B, "ToggleElem", 0x05, 0x01);
+        var (handler, conn) = Setup(0x5B, "ToggleElem", out var reader, 0x05, 0x01);
         ScToggleElemEvent? ev = null;
         handler.ScToggleElem += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x5B, reader));
-        Assert.Equal(3, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x5B, ref reader));
+        Assert.Equal(3, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.Equal(5, ev!.Value.Channel);
         Assert.True(ev.Value.State);
@@ -325,12 +329,12 @@ public class SvenCoopMessageHandlerTests
     [Fact]
     public void HideHUD_ReadsShortMask()
     {
-        var (handler, reader, conn) = Setup(0x5C, "HideHUD", 0x01, 0x01);
+        var (handler, conn) = Setup(0x5C, "HideHUD", out var reader, 0x01, 0x01);
         ScHideHudEvent? ev = null;
         handler.ScHideHud += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x5C, reader));
-        Assert.Equal(3, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x5C, ref reader));
+        Assert.Equal(3, reader.BytePosition);
         Assert.Equal(0x0101, ev!.Value.Flags);
     }
 
@@ -341,11 +345,11 @@ public class SvenCoopMessageHandlerTests
         var payload = new List<byte> { 0x07, 0x0A, 0x80 };
         payload.AddRange(text);
 
-        var (handler, reader, conn) = Setup(0x5D, "ShowMenu", payload.ToArray());
+        var (handler, conn) = Setup(0x5D, "ShowMenu", out var reader, payload.ToArray());
         ScShowMenuEvent? ev = null;
         handler.ScShowMenu += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x5D, reader));
+        Assert.True(handler.HandleMessage(conn, 0x5D, ref reader));
         Assert.NotNull(ev);
         Assert.Equal(0x07, ev!.Value.ValidSlots);
         Assert.Equal(10, ev.Value.DisplayTime);
@@ -363,12 +367,12 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange([0x00, 0x00, 0x40, 0x40]);                     // float 3.0f
         payload.AddRange([0x10, 0x00, 0x00]);                           // class 0x10 + two bytes
 
-        var (handler, reader, conn) = Setup(0x5E, "ScoreInfo", payload.ToArray());
+        var (handler, conn) = Setup(0x5E, "ScoreInfo", out var reader, payload.ToArray());
         ScScoreInfoEvent? ev = null;
         handler.ScScoreInfo += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x5E, reader));
-        Assert.Equal(1 + payload.Count, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x5E, ref reader));
+        Assert.Equal(1 + payload.Count, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.Equal(2, ev!.Value.PlayerIndex);
         Assert.Equal(100f, ev.Value.Score);
@@ -379,12 +383,12 @@ public class SvenCoopMessageHandlerTests
     [Fact]
     public void MapList_ResetCommandStoresTotalOnly()
     {
-        var (handler, reader, conn) = Setup(0x5F, "MapList", 0x00, 0x0A, 0x00);
+        var (handler, conn) = Setup(0x5F, "MapList", out var reader, 0x00, 0x0A, 0x00);
         ScMapListEvent? ev = null;
         handler.ScMapList += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x5F, reader));
-        Assert.Equal(4, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x5F, ref reader));
+        Assert.Equal(4, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.True(ev!.Value.IsReset);
         Assert.Equal(10, ev.Value.TotalMaps);
@@ -394,12 +398,12 @@ public class SvenCoopMessageHandlerTests
     [Fact]
     public void MapList_CloseCommandConsumesCommandByteOnly()
     {
-        var (handler, reader, conn) = Setup(0x5F, "MapList", 0x7B);
+        var (handler, conn) = Setup(0x5F, "MapList", out var reader, 0x7B);
         ScMapListEvent? ev = null;
         handler.ScMapList += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x5F, reader));
-        Assert.Equal(2, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x5F, ref reader));
+        Assert.Equal(2, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.True(ev!.Value.IsClose);
     }
@@ -411,12 +415,12 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange(Encoding.UTF8.GetBytes("map_a\0"));
         payload.AddRange(Encoding.UTF8.GetBytes("map_b\0"));
 
-        var (handler, reader, conn) = Setup(0x5F, "MapList", payload.ToArray());
+        var (handler, conn) = Setup(0x5F, "MapList", out var reader, payload.ToArray());
         ScMapListEvent? ev = null;
         handler.ScMapList += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x5F, reader));
-        Assert.Equal(1 + payload.Count, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x5F, ref reader));
+        Assert.Equal(1 + payload.Count, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.True(ev!.Value.IsUpdate);
         Assert.Equal(2, ev.Value.StartIndex);
@@ -432,11 +436,11 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange(Encoding.UTF8.GetBytes("\0")); // empty yes → "#Menu_Yes"
         payload.AddRange(Encoding.UTF8.GetBytes("Kick him\0"));
 
-        var (handler, reader, conn) = Setup(0x60, "VoteMenu", payload.ToArray());
+        var (handler, conn) = Setup(0x60, "VoteMenu", out var reader, payload.ToArray());
         ScVoteMenuEvent? ev = null;
         handler.ScVoteMenu += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x60, reader));
+        Assert.True(handler.HandleMessage(conn, 0x60, ref reader));
         Assert.NotNull(ev);
         Assert.Equal(3, ev!.Value.VoteId);
         Assert.Equal("#Vote_Map", ev.Value.Question);
@@ -456,12 +460,12 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange([0x10, 0x00, 0x00, 0x00]);               // digest length = 16 (key len)
         payload.AddRange(Enumerable.Repeat((byte)0xAA, 16).ToArray());
 
-        var (handler, reader, conn) = Setup(0x61, "ClExtrasInfo", payload.ToArray());
+        var (handler, conn) = Setup(0x61, "ClExtrasInfo", out var reader, payload.ToArray());
         ScClExtrasInfoEvent? ev = null;
         handler.ScClExtrasInfo += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x61, reader));
-        Assert.Equal(1 + payload.Count, reader.Offset);
+        Assert.True(handler.HandleMessage(conn, 0x61, ref reader));
+        Assert.Equal(1 + payload.Count, reader.BytePosition);
         Assert.NotNull(ev);
         Assert.Equal(16, ev!.Value.PlainLength);
         Assert.Equal(new byte[] { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 }, ev.Value.Iv);
@@ -476,11 +480,11 @@ public class SvenCoopMessageHandlerTests
         payload.AddRange(Encoding.UTF8.GetBytes("desert\0"));
         payload.AddRange(Coord(64)); payload.AddRange(Coord(48)); payload.AddRange(Coord(32));
 
-        var (handler, reader, conn) = Setup(0x60, "ChangeSky", payload.ToArray());
+        var (handler, conn) = Setup(0x60, "ChangeSky", out var reader, payload.ToArray());
         ScChangeSkyEvent? ev = null;
         handler.ScChangeSky += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x60, reader));
+        Assert.True(handler.HandleMessage(conn, 0x60, ref reader));
         Assert.NotNull(ev);
         Assert.Equal("desert", ev!.Value.SkyName);
         Assert.Equal(8f, ev.Value.ColorR);
@@ -498,11 +502,11 @@ public class SvenCoopMessageHandlerTests
             0x00, 0x00, 0xA0, 0x40,                                     // duration = 5.0f
         };
 
-        var (handler, reader, conn) = Setup(0x61, "UpdateTime", payload.ToArray());
+        var (handler, conn) = Setup(0x61, "UpdateTime", out var reader, payload.ToArray());
         ScUpdateTimeEvent? ev = null;
         handler.ScUpdateTime += e => ev = e;
 
-        Assert.True(handler.HandleMessage(conn, 0x61, reader));
+        Assert.True(handler.HandleMessage(conn, 0x61, ref reader));
         Assert.NotNull(ev);
         Assert.Equal(3, ev!.Value.Channel);
         Assert.Equal(10f, ev.Value.Time);
