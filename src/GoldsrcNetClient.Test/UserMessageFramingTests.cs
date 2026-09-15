@@ -1,5 +1,6 @@
 using GoldsrcNetClient.Core.Game;
 using GoldsrcNetClient.Core.Io;
+using GoldsrcNetClient.Core.Messages;
 using GoldsrcNetClient.Core.Network;
 using GoldsrcNetClient.Core.Protocol;
 using System.Text;

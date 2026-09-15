@@ -334,7 +334,6 @@ public readonly record struct ConcussEvent(byte Amount);
 /// <param name="Index">Message type index.</param>
 /// <param name="Name">Message name from SVC_NEWUSERMSG.</param>
 /// <param name="Data">Raw remaining data bytes.</param>
-public readonly record struct RawUserMessage(byte Index, string Name, byte[] Data);
 
 // ─── Sven Co-op ───
 // All layouts below were verified by reverse-engineering svencoop/cl_dlls/client.dll
